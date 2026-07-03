@@ -4,6 +4,7 @@ import com.github.squi2rel.cb.CCBCommand;
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.menu.builder.MenuManager;
+import com.github.squi2rel.cb.util.FoliaScheduler;
 import net.md_5.bungee.api.ChatMessageType;
 import net.md_5.bungee.api.chat.TextComponent;
 import org.bstats.bukkit.Metrics;
@@ -19,6 +20,7 @@ import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
 
 import static java.lang.Math.abs;
 import static me.crylonz.MatchState.*;
@@ -26,9 +28,9 @@ import static me.crylonz.MatchState.*;
 public class CubeBall extends JavaPlugin {
     public static Plugin plugin;
 
-    public static HashMap<String, Ball> balls = new HashMap<>();
-    public static HashMap<String, Match> matches = new HashMap<>();
-    public static HashMap<UUID, Long> cooldown = new HashMap<>();
+    public static Map<String, Ball> balls = new ConcurrentHashMap<>();
+    public static Map<String, Match> matches = new ConcurrentHashMap<>();
+    public static Map<UUID, Long> cooldown = new ConcurrentHashMap<>();
 
     public static int maxMatchPerPlayer;
 
@@ -56,17 +58,23 @@ public class CubeBall extends JavaPlugin {
 
         ball.setPlayerCollisionTick(0);
         balls.put(id, ball);
+        ball.setPhysicsTask(FoliaScheduler.runEntityTimer(block, () -> tickBall(id), 1, 2));
     }
 
     public static void destroyBall(String id) {
-        if (balls.get(id) != null && balls.get(id).getBall() != null) {
-            balls.get(id).getBall().remove();
-            balls.remove(id);
+        Ball ballData = balls.remove(id);
+        if (ballData != null) {
+            ballData.cancelPhysicsTask();
+            FallingBlock ball = ballData.getBall();
+            if (ball != null) {
+                FoliaScheduler.runEntity(ball, ball::remove);
+            }
         }
     }
 
     public void onEnable() {
         plugin = this;
+        FoliaScheduler.init(this);
 
         saveDefaultConfig();
 
@@ -99,10 +107,10 @@ public class CubeBall extends JavaPlugin {
 
         balls.forEach((key, value) -> {
             if (value.getBall() != null) {
-                value.getBall().remove();
+                destroyBall(key);
             }
         });
-        getServer().getScheduler().cancelTasks(this);
+        FoliaScheduler.cancelPluginTasks(this);
     }
 
     public static void save() {
@@ -125,13 +133,15 @@ public class CubeBall extends JavaPlugin {
 
     private void launchRepeatingTask() {
 
-        getServer().getScheduler().runTaskTimer(this, () -> {
+        FoliaScheduler.runGlobalTimer(() -> {
 
             cooldown.entrySet().removeIf(entry -> {
                 long targetTime = entry.getValue();
                 boolean b = System.currentTimeMillis() > targetTime;
                 Player p = Bukkit.getPlayer(entry.getKey());
-                if (p != null) p.spigot().sendMessage(ChatMessageType.ACTION_BAR, getDashCooldownText(b, targetTime));
+                if (p != null) {
+                    FoliaScheduler.runEntity(p, () -> p.spigot().sendMessage(ChatMessageType.ACTION_BAR, getDashCooldownText(b, targetTime)));
+                }
                 return b;
             });
 
@@ -142,14 +152,14 @@ public class CubeBall extends JavaPlugin {
                     if (matchTimer % 60 == 0 && matchTimer > 0) {
                         match.getAllPlayer(true).forEach(player -> {
                             if (player != null) {
-                                player.sendMessage(I18n.format("match_time_left_min", "min", matchTimer / 60));
+                                FoliaScheduler.runEntity(player, () -> player.sendMessage(I18n.format("match_time_left_min", "min", matchTimer / 60)));
                             }
                         });
                     }
                     if (matchTimer == 30 || matchTimer == 15 || matchTimer <= 10 && matchTimer > 0) {
                         match.getAllPlayer(true).forEach(player -> {
                             if (player != null) {
-                                player.sendMessage(I18n.format("match_time_left_sec", "sec", matchTimer));
+                                FoliaScheduler.runEntity(player, () -> player.sendMessage(I18n.format("match_time_left_sec", "sec", matchTimer)));
                             }
                         });
                     }
@@ -165,76 +175,77 @@ public class CubeBall extends JavaPlugin {
                     }
                 }
             }
-        }, 0, 20);
+        }, 1, 20);
+    }
 
+    private static void tickBall(String id) {
+        Ball ballData = balls.get(id);
+        if (ballData == null || ballData.getBall() == null) return;
 
-        getServer().getScheduler().runTaskTimer(this, () -> {
+        FallingBlock ball = ballData.getBall();
+        if (!ball.isValid() || ball.isDead()) return;
 
-            for (Map.Entry<String, Ball> entry : balls.entrySet()) {
-                Ball ballData = entry.getValue();
-                if (ballData.getBall() != null) {
-                    ballData.getBall().setTicksLived(1);
+        ball.setTicksLived(1);
 
-                    Match match = matches.get(ballData.getId());
+        Match match = matches.get(ballData.getId());
 
-                    ballData.getBall().getNearbyEntities(10, 10, 10)
-                            .stream().filter(entity -> entity instanceof Player)
-                            .forEach(p -> {
-                                Player player = (Player) p;
-                                // if player is colliding the ball
-                                if (player.getLocation().distance(ballData.getBall().getLocation()) < 1 || (
-                                        player.getLocation().distance(ballData.getBall().getLocation()) < 2.5 &&
-                                                Math.floor(ballData.getBall().getLocation().getX()) == Math.floor(player.getLocation().getX()) &&
-                                                Math.floor(ballData.getBall().getLocation().getZ()) == Math.floor(player.getLocation().getZ()))) {
+        ball.getNearbyEntities(3, 3, 3)
+                .stream().filter(entity -> entity instanceof Player)
+                .forEach(p -> {
+                    Player player = (Player) p;
+                    // if player is colliding the ball
+                    if (player.getLocation().distance(ball.getLocation()) < 1 || (
+                            player.getLocation().distance(ball.getLocation()) < 2.5 &&
+                                    Math.floor(ball.getLocation().getX()) == Math.floor(player.getLocation().getX()) &&
+                                    Math.floor(ball.getLocation().getZ()) == Math.floor(player.getLocation().getZ()))) {
 
-                                    // compute velocity to the ball
-                                    Vector velocity = getVector(player, ballData);
+                        // compute velocity to the ball
+                        Vector velocity = getVector(player, ballData);
 
-                                    // apply ball trajectory
-                                    ballData.getBall().setVelocity(velocity);
-                                    ballData.getBall().setGravity(true);
-                                    ballData.getBall().getWorld().playSound(ballData.getBall().getLocation(), Sound.BLOCK_STONE_HIT, 10, 1);
-                                    ballData.setPlayerCollisionTick(0);
+                        // apply ball trajectory
+                        ball.setVelocity(velocity);
+                        ball.setGravity(true);
+                        ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_STONE_HIT, 10, 1);
+                        ballData.setPlayerCollisionTick(0);
 
-                                    if (match != null) {
-                                        match.setLastTouchPlayer(player);
-                                    }
-                                }
-                            });
-
-                    //compute bouncing on other blocks
-                    if (ballData.getPlayerCollisionTick() > 3) {
-
-                        boolean zBouncing = abs(ballData.getLastVelocity().getZ()) - abs(ballData.getBall().getVelocity().getZ()) > 0.2 && ballData.getBall().getVelocity().getZ() == 0;
-                        boolean xBouncing = abs(ballData.getLastVelocity().getX()) - abs(ballData.getBall().getVelocity().getX()) > 0.2 && ballData.getBall().getVelocity().getX() == 0;
-                        boolean yBouncing = abs(ballData.getLastVelocity().getY()) - abs(ballData.getBall().getVelocity().getY()) > 0.2 && ballData.getBall().getVelocity().getY() == 0;
-
-                        if (zBouncing) {
-                            ballData.getBall().setVelocity(ballData.getBall().getVelocity().setZ(-ballData.getLastVelocity().getZ()));
-                            ballData.getBall().getVelocity().setZ(-ballData.getLastVelocity().getZ());
-                            ballData.getBall().getWorld().playSound(ballData.getBall().getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
-                        }
-                        if (xBouncing) {
-                            ballData.getBall().setVelocity(ballData.getBall().getVelocity().setX(-ballData.getLastVelocity().getX()));
-                            ballData.getBall().getVelocity().setX(-ballData.getLastVelocity().getX());
-                            ballData.getBall().getWorld().playSound(ballData.getBall().getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
-                        }
-                        if (yBouncing) {
-                            ballData.getBall().setGravity(true);
-                            ballData.getBall().setVelocity(ballData.getBall().getVelocity().setY(-ballData.getLastVelocity().getY()));
-                            ballData.getBall().getWorld().playSound(ballData.getBall().getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+                        if (match != null) {
+                            match.setLastTouchPlayer(player);
                         }
                     }
+                });
 
-                    if (match != null) {
-                        match.checkGoal(ballData.getBall().getLocation());
-                    }
+        //compute bouncing on other blocks
+        if (ballData.getPlayerCollisionTick() > 3) {
 
-                    ballData.setLastVelocity(ballData.getBall().getVelocity().clone());
-                    ballData.setPlayerCollisionTick(ballData.getPlayerCollisionTick() + 1);
-                }
+            boolean zBouncing = abs(ballData.getLastVelocity().getZ()) - abs(ball.getVelocity().getZ()) > 0.2 && ball.getVelocity().getZ() == 0;
+            boolean xBouncing = abs(ballData.getLastVelocity().getX()) - abs(ball.getVelocity().getX()) > 0.2 && ball.getVelocity().getX() == 0;
+            boolean yBouncing = abs(ballData.getLastVelocity().getY()) - abs(ball.getVelocity().getY()) > 0.2 && ball.getVelocity().getY() == 0;
+
+            if (zBouncing) {
+                ball.setVelocity(ball.getVelocity().setZ(-ballData.getLastVelocity().getZ()));
+                ball.getVelocity().setZ(-ballData.getLastVelocity().getZ());
+                ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
             }
-        }, 0, 2);
+            if (xBouncing) {
+                ball.setVelocity(ball.getVelocity().setX(-ballData.getLastVelocity().getX()));
+                ball.getVelocity().setX(-ballData.getLastVelocity().getX());
+                ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+            }
+            if (yBouncing) {
+                ball.setGravity(true);
+                ball.setVelocity(ball.getVelocity().setY(-ballData.getLastVelocity().getY()));
+                ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+            }
+        }
+
+        if (match != null) {
+            match.checkGoal(ball.getLocation());
+        }
+
+        if (balls.get(id) != ballData) return;
+
+        ballData.setLastVelocity(ball.getVelocity().clone());
+        ballData.setPlayerCollisionTick(ballData.getPlayerCollisionTick() + 1);
     }
 
     private static TextComponent getDashCooldownText(boolean b, long targetTime) {

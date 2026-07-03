@@ -1,5 +1,6 @@
 package me.crylonz;
 
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.entity.FallingBlock;
 import org.bukkit.util.Vector;
 
@@ -10,6 +11,7 @@ public class Ball {
     private FallingBlock ball;
     private Vector lastVelocity;
     private int playerCollisionTick;
+    private ScheduledTask physicsTask;
 
     public Ball() {
         lastVelocity = new Vector(0,0,0);
@@ -45,5 +47,16 @@ public class Ball {
 
     public void setPlayerCollisionTick(int playerCollisionTick) {
         this.playerCollisionTick = playerCollisionTick;
+    }
+
+    public void setPhysicsTask(ScheduledTask physicsTask) {
+        this.physicsTask = physicsTask;
+    }
+
+    public void cancelPhysicsTask() {
+        if (physicsTask != null) {
+            physicsTask.cancel();
+            physicsTask = null;
+        }
     }
 }

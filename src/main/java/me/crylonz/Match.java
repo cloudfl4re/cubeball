@@ -2,6 +2,7 @@ package me.crylonz;
 
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.MatchData;
+import com.github.squi2rel.cb.util.FoliaScheduler;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
@@ -9,29 +10,30 @@ import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.potion.PotionEffect;
 import org.bukkit.potion.PotionEffectType;
-import org.bukkit.scheduler.BukkitScheduler;
 import org.bukkit.util.Vector;
 
 import java.util.*;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
+import java.util.function.Consumer;
 
 import static me.crylonz.CubeBall.*;
 import static me.crylonz.MatchState.*;
-import static org.bukkit.Bukkit.getServer;
 
 public class Match {
     public int matchTimer;
 
     private final String name;
     private final Random rand = new Random();
-    private final HashSet<Player> blueTeam = new HashSet<>();
-    private final HashSet<Player> redTeam = new HashSet<>();
-    private final HashSet<Player> spectatorTeam = new HashSet<>();
-    private final HashMap<UUID, Integer> goals = new HashMap<>();
-    private MatchState matchState;
-    private UUID lastTouchPlayer;
-    private int blueScore = 0;
-    private int redScore = 0;
-    private boolean canceled;
+    private final Set<Player> blueTeam = ConcurrentHashMap.newKeySet();
+    private final Set<Player> redTeam = ConcurrentHashMap.newKeySet();
+    private final Set<Player> spectatorTeam = ConcurrentHashMap.newKeySet();
+    private final Map<UUID, Integer> goals = new ConcurrentHashMap<>();
+    private volatile MatchState matchState;
+    private volatile UUID lastTouchPlayer;
+    private volatile int blueScore = 0;
+    private volatile int redScore = 0;
+    private volatile boolean canceled;
     private final MatchData data;
 
     public Match(String name, Player player) {
@@ -43,32 +45,67 @@ public class Match {
         matchState = CREATED;
     }
 
-    public void scanNearPlayers(List<Location> spawns, Team team) {
-        for (Location spawn : spawns) {
-            if (spawn == null) continue;
-            World world = Objects.requireNonNull(spawn.getWorld());
-            for (Entity entity : world.getNearbyEntities(spawn, 1, 1, 1)) {
-                if (entity instanceof Player) {
-                    Player player = (Player) entity;
-                    if (player.getVehicle() == null) addPlayerToTeam(player, team);
-                }
-            }
-        }
-    }
-
     public void scanPlayer() {
         blueTeam.clear();
         redTeam.clear();
-        scanNearPlayers(data.blueTeamSpawns, Team.BLUE);
-        scanNearPlayers(data.redTeamSpawns, Team.RED);
-        World world = data.ballSpawn.getWorld();
-        for (Player player : Bukkit.getOnlinePlayers()) {
-            if (player.getWorld() != world) continue;
-            if (player.getLocation().distance(data.ballSpawn) < 256) {
-                if (!blueTeam.contains(player) && !redTeam.contains(player)) addPlayerToTeam(player, Team.SPECTATOR);
-            }
+        spectatorTeam.clear();
+
+        List<Location> blueSpawns = new ArrayList<>(data.blueTeamSpawns);
+        List<Location> redSpawns = new ArrayList<>(data.redTeamSpawns);
+        List<Player> onlinePlayers = new ArrayList<>(Bukkit.getOnlinePlayers());
+        int taskCount = blueSpawns.size() + redSpawns.size() + onlinePlayers.size();
+        if (taskCount <= 0) {
+            matchState = READY;
+            return;
         }
-        matchState = READY;
+
+        AtomicInteger remaining = new AtomicInteger(taskCount);
+        for (Location spawn : blueSpawns) {
+            scanNearPlayers(spawn, Team.BLUE, remaining);
+        }
+        for (Location spawn : redSpawns) {
+            scanNearPlayers(spawn, Team.RED, remaining);
+        }
+
+        World world = data.ballSpawn.getWorld();
+        for (Player player : onlinePlayers) {
+            FoliaScheduler.runEntity(player, () -> {
+                try {
+                    if (player.getWorld() != world) return;
+                    if (player.getLocation().distance(data.ballSpawn) < 256) {
+                        if (!blueTeam.contains(player) && !redTeam.contains(player)) addPlayerToTeam(player, Team.SPECTATOR);
+                    }
+                } finally {
+                    finishScan(remaining);
+                }
+            }, () -> finishScan(remaining));
+        }
+    }
+
+    private void scanNearPlayers(Location spawn, Team team, AtomicInteger remaining) {
+        if (spawn == null) {
+            finishScan(remaining);
+            return;
+        }
+        FoliaScheduler.runRegion(spawn, () -> {
+            try {
+                World world = Objects.requireNonNull(spawn.getWorld());
+                for (Entity entity : world.getNearbyEntities(spawn, 1, 1, 1)) {
+                    if (entity instanceof Player) {
+                        Player player = (Player) entity;
+                        if (player.getVehicle() == null) addPlayerToTeam(player, team);
+                    }
+                }
+            } finally {
+                finishScan(remaining);
+            }
+        });
+    }
+
+    private void finishScan(AtomicInteger remaining) {
+        if (remaining.decrementAndGet() == 0) {
+            matchState = READY;
+        }
     }
 
     public void start(Player p) {
@@ -81,16 +118,16 @@ public class Match {
                 matchTimer = data.matchDuration;
                 matchState = IN_PROGRESS;
 
-                p.sendMessage(I18n.get("match_starting"));
-                getAllPlayer(true).forEach(player -> {
+                sendPlayerMessage(p, I18n.get("match_starting"));
+                forEachPlayer(true, player -> {
                     player.sendMessage(I18n.format("match_started", "min", matchTimer / 60, "sec", matchTimer - ((matchTimer / 60) * 60)));
                     player.sendMessage(I18n.format("max_goals", "max", data.maxGoal <= 0 ? I18n.get("max_goals_unlimited") : data.maxGoal));
                 });
             } else {
-                p.sendMessage(I18n.get("need_add_players"));
+                sendPlayerMessage(p, I18n.get("need_add_players"));
             }
         } else {
-            p.sendMessage(I18n.get("match_not_ready"));
+            sendPlayerMessage(p, I18n.get("match_not_ready"));
         }
     }
 
@@ -125,11 +162,12 @@ public class Match {
         return result;
     }
 
-    public void teleportTeam(HashSet<Player> team, List<Location> spawns) {
+    public void teleportTeam(Set<Player> team, List<Location> spawns) {
         int[] ids = randomIds(spawns.size(), team.size());
         int i = 0;
         for (Player player : team) {
-            player.teleport(getFacingLocation(spawns.get(ids[i++]), data.ballSpawn));
+            Location target = getFacingLocation(spawns.get(ids[i++]), data.ballSpawn);
+            runForPlayer(player, p -> p.teleportAsync(target));
         }
     }
 
@@ -152,19 +190,24 @@ public class Match {
 
         PotionEffect effect = new PotionEffect(PotionEffectType.SLOWNESS, 80, 255);
         List<Location> allSpawns = getAllSpawns();
-        for (Location spawn : allSpawns) surroundWith(spawn, Material.BARRIER);
-        getAllPlayer(false).forEach(player -> {
+        for (Location spawn : allSpawns) setSurrounding(spawn, Material.BARRIER);
+        forEachPlayer(false, player -> {
+            if (!PlayerStateCache.has(player)) PlayerStateCache.save(player);
+            PlayerStateCache.clear(player);
+            equipTeamKit(player);
+            player.setAllowFlight(false);
+            player.setFlying(false);
             player.setVelocity(new Vector(0, 0, 0));
             player.addPotionEffect(effect);
         });
-        Bukkit.getScheduler().runTaskLater(plugin, () -> sendMessageToAllPlayer(I18n.get("countdown_3"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 20);
-        Bukkit.getScheduler().runTaskLater(plugin, () -> sendMessageToAllPlayer(I18n.get("countdown_2"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 40);
-        Bukkit.getScheduler().runTaskLater(plugin, () -> sendMessageToAllPlayer(I18n.get("countdown_1"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 60);
-        Bukkit.getScheduler().runTaskLater(plugin, () -> {
+        FoliaScheduler.runGlobalLater(() -> sendMessageToAllPlayer(I18n.get("countdown_3"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 20);
+        FoliaScheduler.runGlobalLater(() -> sendMessageToAllPlayer(I18n.get("countdown_2"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 40);
+        FoliaScheduler.runGlobalLater(() -> sendMessageToAllPlayer(I18n.get("countdown_1"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 60);
+        FoliaScheduler.runGlobalLater(() -> {
             sendMessageToAllPlayer(I18n.get("go"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 2);
-            for (Location spawn : getAllSpawns()) surroundWith(spawn, Material.AIR);
+            for (Location spawn : getAllSpawns()) setSurrounding(spawn, Material.AIR);
             if (canceled) return;
-            startRound();
+            FoliaScheduler.runRegion(data.ballSpawn, this::startRound);
         }, 80);
     }
 
@@ -191,13 +234,17 @@ public class Match {
         pos.getRelative(0, 2, 0).setType(block);
     }
 
+    private static void setSurrounding(Location base, Material block) {
+        FoliaScheduler.runRegion(base, () -> surroundWith(base, block));
+    }
+
     public void replacePlayer(Player player) {
         replacePlayer(blueTeam, player);
         replacePlayer(redTeam, player);
         replacePlayer(spectatorTeam, player);
     }
 
-    private static void replacePlayer(HashSet<Player> players, Player newPlayer) {
+    private static void replacePlayer(Set<Player> players, Player newPlayer) {
         UUID uuid = newPlayer.getUniqueId();
         Player oldPlayer = null;
 
@@ -230,7 +277,7 @@ public class Match {
                 blueTeam.remove(p);
                 redTeam.remove(p);
             }
-            p.sendMessage(I18n.format("your_team", "team", I18n.get(team == Team.BLUE ? "blue_name" : team == Team.SPECTATOR ? "spectator_name" : "red_name")));
+            sendPlayerMessage(p, I18n.format("your_team", "team", I18n.get(team == Team.BLUE ? "blue_name" : team == Team.SPECTATOR ? "spectator_name" : "red_name")));
         }
     }
 
@@ -270,7 +317,7 @@ public class Match {
         if (matchState == IN_PROGRESS && (data.maxGoal <= 0 || (blueScore != data.maxGoal && redScore != data.maxGoal))) {
             sendScoreToPlayer();
             matchState = GOAL;
-            getServer().getScheduler().runTaskLater(plugin, this::startDelayedRound, 20 * 3);
+            FoliaScheduler.runGlobalLater(this::startDelayedRound, 20 * 3);
         } else {
             matchState = GOAL;
             endMatch();
@@ -279,19 +326,18 @@ public class Match {
     }
 
     public void spawnFirework(Team team) {
-        BukkitScheduler scheduler = getServer().getScheduler();
         for (int i = 0; i < 3; i++) {
             int offset = i * 30;
-            scheduler.runTaskLater(plugin, () -> spawnFireworkFor(team), offset + 5);
-            scheduler.runTaskLater(plugin, () -> spawnFireworkFor(team), offset + 10);
-            scheduler.runTaskLater(plugin, () -> spawnFireworkFor(team), offset + 15);
+            FoliaScheduler.runGlobalLater(() -> spawnFireworkFor(team), offset + 5);
+            FoliaScheduler.runGlobalLater(() -> spawnFireworkFor(team), offset + 10);
+            FoliaScheduler.runGlobalLater(() -> spawnFireworkFor(team), offset + 15);
         }
     }
 
     public void spawnFireworkFor(Team team) {
-        HashSet<Player> players = team == Team.BLUE ? blueTeam : redTeam;
+        Set<Player> players = team == Team.BLUE ? blueTeam : redTeam;
         for (Player player : players) {
-            player.getWorld().spawnEntity(player.getLocation(), EntityType.FIREWORK_ROCKET);
+            runForPlayer(player, p -> p.getWorld().spawnEntity(p.getLocation(), EntityType.FIREWORK_ROCKET));
         }
     }
 
@@ -313,7 +359,7 @@ public class Match {
 
         ArrayList<Map.Entry<UUID, Integer>> list = new ArrayList<>(goals.entrySet());
         list.sort((e1, e2) -> Integer.compare(e2.getValue(), e1.getValue()));
-        getAllPlayer(true).forEach(player -> {
+        forEachPlayer(true, player -> {
             player.sendMessage(I18n.get("game_over"));
             player.sendMessage(I18n.get("goal_rank"));
             player.sendMessage(I18n.format("total_goals", "total", redScore + blueScore));
@@ -329,13 +375,15 @@ public class Match {
         });
 
         removeBall();
+        forEachPlayer(true, PlayerStateCache::restore);
         reset();
     }
 
     private static String getName(UUID uuid) {
         if (uuid == null) return "null";
-        Player p = Bukkit.getPlayer(uuid);
-        return p != null ? p.getDisplayName() : uuid.toString();
+        OfflinePlayer p = Bukkit.getOfflinePlayer(uuid);
+        String name = p.getName();
+        return name != null ? name : uuid.toString();
     }
 
     public void reset() {
@@ -350,13 +398,18 @@ public class Match {
         removeBall();
         reset();
         canceled = true;
-        for (Player p : getAllPlayer(true)) p.sendMessage(I18n.get("match_canceled"));
+        forEachPlayer(true, p -> {
+            PlayerStateCache.restore(p);
+            p.sendMessage(I18n.get("match_canceled"));
+        });
     }
 
     public void sendScoreToPlayer() {
         String title = I18n.format("score_title", "blue", blueScore, "red", redScore);
         String subtitle = I18n.format("score_subtitle", "name", getName(lastTouchPlayer).toUpperCase(), "speed", computeSpeedGoal());
-        goals.put(lastTouchPlayer, goals.getOrDefault(lastTouchPlayer, 0) + 1);
+        if (lastTouchPlayer != null) {
+            goals.put(lastTouchPlayer, goals.getOrDefault(lastTouchPlayer, 0) + 1);
+        }
         sendMessageToAllPlayer(title, subtitle, 3, Sound.WEATHER_RAIN, 0.5f);
     }
 
@@ -376,11 +429,32 @@ public class Match {
         send(spectatorTeam, title, subtitle, duration, sound, pitch);
     }
 
-    private void send(HashSet<Player> team, String title, String subtitle, int duration, Sound sound, float pitch) {
+    private void send(Set<Player> team, String title, String subtitle, int duration, Sound sound, float pitch) {
         team.forEach(player -> {
             if (player != null) {
-                player.sendTitle(title, subtitle, 1, duration * 20, 1);
-                player.playSound(player.getLocation(), sound, 10, pitch);
+                runForPlayer(player, p -> {
+                    p.sendTitle(title, subtitle, 1, duration * 20, 1);
+                    p.playSound(p.getLocation(), sound, 10, pitch);
+                });
+            }
+        });
+    }
+
+    private void forEachPlayer(boolean spectator, Consumer<Player> action) {
+        for (Player player : getAllPlayer(spectator)) {
+            runForPlayer(player, action);
+        }
+    }
+
+    private void sendPlayerMessage(Player player, String message) {
+        runForPlayer(player, p -> p.sendMessage(message));
+    }
+
+    private void runForPlayer(Player player, Consumer<Player> action) {
+        if (player == null) return;
+        FoliaScheduler.runEntity(player, () -> {
+            if (player.isOnline()) {
+                action.accept(player);
             }
         });
     }
@@ -388,13 +462,19 @@ public class Match {
     public void triggerGoalAnimation(Team team) {
         if (team.equals(Team.BLUE)) {
             data.redTeamGoalBlocks.forEach(block -> {
-                Objects.requireNonNull(block.getWorld()).spawnEntity(block.getBlock().getLocation(), EntityType.FIREWORK_ROCKET);
-                Objects.requireNonNull(block.getWorld()).playEffect(block.getBlock().getLocation(), Effect.VILLAGER_PLANT_GROW, 3);
+                FoliaScheduler.runRegion(block, () -> {
+                    Location location = block.getBlock().getLocation();
+                    Objects.requireNonNull(block.getWorld()).spawnEntity(location, EntityType.FIREWORK_ROCKET);
+                    Objects.requireNonNull(block.getWorld()).playEffect(location, Effect.VILLAGER_PLANT_GROW, 3);
+                });
             });
         } else {
             data.blueTeamGoalBlocks.forEach(block -> {
-                Objects.requireNonNull(block.getWorld()).spawnEntity(block.getBlock().getLocation(), EntityType.FIREWORK_ROCKET);
-                Objects.requireNonNull(block.getWorld()).playEffect(block.getBlock().getLocation(), Effect.VILLAGER_PLANT_GROW, 3);
+                FoliaScheduler.runRegion(block, () -> {
+                    Location location = block.getBlock().getLocation();
+                    Objects.requireNonNull(block.getWorld()).spawnEntity(location, EntityType.FIREWORK_ROCKET);
+                    Objects.requireNonNull(block.getWorld()).playEffect(location, Effect.VILLAGER_PLANT_GROW, 3);
+                });
             });
 
         }
@@ -433,15 +513,15 @@ public class Match {
         this.lastTouchPlayer = lastTouchPlayer.getUniqueId();
     }
 
-    public HashSet<Player> getBlueTeam() {
+    public Set<Player> getBlueTeam() {
         return blueTeam;
     }
 
-    public HashSet<Player> getRedTeam() {
+    public Set<Player> getRedTeam() {
         return redTeam;
     }
 
-    public HashSet<Player> getSpectatorTeam() {
+    public Set<Player> getSpectatorTeam() {
         return spectatorTeam;
     }
 
@@ -497,5 +577,27 @@ public class Match {
             return true;
         }
         return false;
+    }
+
+    public boolean isInProgress() {
+        return matchState == IN_PROGRESS || matchState == OVERTIME || matchState == GOAL || matchState == PAUSED;
+    }
+
+    private void equipTeamKit(Player player) {
+        org.bukkit.inventory.ItemStack chest = new org.bukkit.inventory.ItemStack(Material.LEATHER_CHESTPLATE);
+        org.bukkit.inventory.ItemStack legs = new org.bukkit.inventory.ItemStack(Material.LEATHER_LEGGINGS);
+        org.bukkit.inventory.ItemStack boots = new org.bukkit.inventory.ItemStack(Material.LEATHER_BOOTS);
+        org.bukkit.Color color = blueTeam.contains(player) ? org.bukkit.Color.BLUE : org.bukkit.Color.RED;
+        for (org.bukkit.inventory.ItemStack piece : new org.bukkit.inventory.ItemStack[]{chest, legs, boots}) {
+            if (piece.getItemMeta() instanceof org.bukkit.inventory.meta.LeatherArmorMeta) {
+                org.bukkit.inventory.meta.LeatherArmorMeta meta = (org.bukkit.inventory.meta.LeatherArmorMeta) piece.getItemMeta();
+                meta.setColor(color);
+                piece.setItemMeta(meta);
+            }
+        }
+        org.bukkit.inventory.PlayerInventory inv = player.getInventory();
+        inv.setChestplate(chest);
+        inv.setLeggings(legs);
+        inv.setBoots(boots);
     }
 }

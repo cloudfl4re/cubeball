@@ -10,10 +10,11 @@ import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
+import org.bukkit.event.player.PlayerToggleFlightEvent;
+import org.bukkit.metadata.MetadataValue;
 import org.bukkit.util.Vector;
-
-import java.util.concurrent.atomic.AtomicReference;
 
 import static java.lang.Double.max;
 import static java.lang.Double.min;
@@ -24,42 +25,41 @@ public class CubeBallListener implements Listener {
 
     @EventHandler
     public void blockChangeEvent(EntityChangeBlockEvent e) {
-        for (Match match : matches.values()) {
-            Material block = match.getData().cubeBallBlock;
-            if (e.getTo().equals(block)) {
-                if (e.getEntityType() == EntityType.FALLING_BLOCK) {
-                    e.setCancelled(true);
+        if (e.getEntityType() != EntityType.FALLING_BLOCK) return;
 
-                    Ball ballData = fetchBallContacting(e.getBlock().getLocation());
+        String ballId = getBallId(e);
+        if (ballId == null) return;
 
-                    if (ballData != null) {
-                        String ballId = ballData.getId();
+        Match match = matches.get(ballId);
+        if (match == null) return;
 
-                        if (ballData.getBall() != null) {
-                            Vector velocity = ballData.getBall().getVelocity();
-                            double zVelocity = abs(velocity.getZ()) / 1.5;
-                            double xVelocity = abs(velocity.getX()) / 1.5;
-                            double maxZX = max(zVelocity, xVelocity);
+        Material block = match.getData().cubeBallBlock;
+        if (!e.getTo().equals(block)) return;
 
-                            velocity.setY(min(maxZX, 0.5));
+        e.setCancelled(true);
 
-                            destroyBall(ballId);
-                            generateBall(block, ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
+        Ball ballData = balls.get(ballId);
+        if (ballData == null || ballData.getBall() == null) return;
 
-                            ballData = balls.get(ballId);
-                            ballData.getBall().setVelocity(velocity);
+        Vector velocity = ballData.getBall().getVelocity();
+        double zVelocity = abs(velocity.getZ()) / 1.5;
+        double xVelocity = abs(velocity.getX()) / 1.5;
+        double maxZX = max(zVelocity, xVelocity);
 
-                            if (abs(velocity.getX() + velocity.getY() + velocity.getZ()) <= 0.001 || velocity.getY() < 0.025) {
-                                ballData.getBall().setVelocity(ballData.getBall().getVelocity().zero());
-                                ballData.getBall().setGravity(false);
-                            } else {
-                                if (abs(velocity.getX() + velocity.getY() + velocity.getZ()) > 0.1) {
-                                    ballData.getBall().getWorld().playSound(ballData.getBall().getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
-                                }
-                            }
-                        }
-                    }
-                }
+        velocity.setY(min(maxZX, 0.5));
+
+        destroyBall(ballId);
+        generateBall(block, ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
+
+        ballData = balls.get(ballId);
+        ballData.getBall().setVelocity(velocity);
+
+        if (abs(velocity.getX() + velocity.getY() + velocity.getZ()) <= 0.001 || velocity.getY() < 0.025) {
+            ballData.getBall().setVelocity(ballData.getBall().getVelocity().zero());
+            ballData.getBall().setGravity(false);
+        } else {
+            if (abs(velocity.getX() + velocity.getY() + velocity.getZ()) > 0.1) {
+                ballData.getBall().getWorld().playSound(ballData.getBall().getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
             }
         }
     }
@@ -93,15 +93,38 @@ public class CubeBallListener implements Listener {
         cooldown.remove(event.getPlayer().getUniqueId());
     }
 
-    private Ball fetchBallContacting(Location location) {
-
-        AtomicReference<Ball> ballTrigger = new AtomicReference<>();
-        balls.forEach((id, ball) -> {
-            if (ball.getBall().getWorld().equals(location.getWorld()) &&
-                    ball.getBall().getLocation().distanceSquared(location) < 2) {
-                ballTrigger.set(ball);
+    @EventHandler
+    public static void onToggleFlight(PlayerToggleFlightEvent event) {
+        Player player = event.getPlayer();
+        for (Match match : matches.values()) {
+            if (match.isInProgress() && match.containsPlayer(player)) {
+                event.setCancelled(true);
+                player.setAllowFlight(false);
+                return;
             }
-        });
-        return ballTrigger.get();
+        }
+    }
+
+    @EventHandler
+    public static void onCommand(PlayerCommandPreprocessEvent event) {
+        Player player = event.getPlayer();
+        if (player.hasPermission("cubeball.admin")) return;
+        for (Match match : matches.values()) {
+            if (match.isInProgress() && match.containsPlayer(player)) {
+                String label = event.getMessage().trim().toLowerCase();
+                if (label.startsWith("/ccb")) return;
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    private String getBallId(EntityChangeBlockEvent event) {
+        for (MetadataValue value : event.getEntity().getMetadata("ballID")) {
+            if (value.getOwningPlugin() == plugin) {
+                return value.asString();
+            }
+        }
+        return null;
     }
 }

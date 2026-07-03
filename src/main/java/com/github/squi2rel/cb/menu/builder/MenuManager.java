@@ -1,5 +1,6 @@
 package com.github.squi2rel.cb.menu.builder;
 
+import com.github.squi2rel.cb.util.FoliaScheduler;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -11,12 +12,14 @@ import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
 
 import java.util.HashMap;
+import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Consumer;
 
 public class MenuManager implements Listener {
-    private static final HashMap<UUID, MenuContainer<?>> menus = new HashMap<>();
-    private static final HashMap<UUID, Consumer<String>> handlers = new HashMap<>();
+    private static final Map<UUID, MenuContainer<?>> menus = new ConcurrentHashMap<>();
+    private static final Map<UUID, Consumer<String>> handlers = new ConcurrentHashMap<>();
 
     private final Plugin plugin;
 
@@ -49,7 +52,7 @@ public class MenuManager implements Listener {
         for (UUID uuid : menus.keySet()) {
             Player player = Bukkit.getPlayer(uuid);
             if (player == null) continue;
-            player.closeInventory();
+            FoliaScheduler.runEntity(player, player::closeInventory);
         }
     }
 
@@ -92,6 +95,6 @@ public class MenuManager implements Listener {
         if (handler == null) return;
         event.setCancelled(true);
         String message = event.getMessage();
-        Bukkit.getScheduler().runTask(plugin, () -> handler.accept(message));
+        FoliaScheduler.runEntity(player, () -> handler.accept(message));
     }
 }

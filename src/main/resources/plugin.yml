@@ -1,18 +1,19 @@
-name: CubeCubeBall
+name: cubeball
 main: me.crylonz.CubeBall
 version: 1.0.0
 author: Crylonz, squi2rel
 description: Play football in Minecraft
-api-version: 1.16
+api-version: "1.21.11"
+folia-supported: true
 commands:
   ccb:
-    permission: cubecubeball.manage
+    permission: cubeball.manage
     description: Control command
     usage: /ccb
 permissions:
-  cubecubeball.manage:
+  cubeball.manage:
     description: Allows player to manage cubeball
     default: op
-  cubecubeball.admin:
+  cubeball.admin:
     description: Manage all match
     default: op

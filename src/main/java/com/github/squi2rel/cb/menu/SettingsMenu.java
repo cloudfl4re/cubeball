@@ -83,7 +83,7 @@ public class SettingsMenu {
             builder.refresh();
         });
         builder.setSlot(7, 1, c.cubeBallBlock, I18n.get("menu_desc_ballblock"), null).setAction((p, v) -> {
-            if (!p.hasPermission("cubecubeball.admin")) {
+            if (!p.hasPermission("cubeball.admin")) {
                 p.sendMessage(ChatColor.RED + "You do not have permission to do this!");
                 return;
             }
@@ -160,7 +160,7 @@ public class SettingsMenu {
         int col = 0, row = 0;
         int maxPerPage = 5 * 9;
         List<Match> values;
-        if (player.hasPermission("cubecubeball.admin")) {
+        if (player.hasPermission("cubeball.admin")) {
             values = new ArrayList<>(CubeBall.matches.values());
         } else {
             long most = player.getUniqueId().getMostSignificantBits();
@@ -189,7 +189,7 @@ public class SettingsMenu {
 
     public static MenuContext<Void> settings = new MenuBuilder<Void>(I18n.get("menu_title"), 6, builder -> {
         builder.setSlot(0, 0, GREEN_CONCRETE, I18n.get("menu_new"), null).setAction((p, v) -> {
-            if (!p.hasPermission("cubecubeball.admin")) {
+            if (!p.hasPermission("cubeball.admin")) {
                 long most = p.getUniqueId().getMostSignificantBits();
                 long least = p.getUniqueId().getLeastSignificantBits();
                 if (CubeBall.matches.values().stream().filter(m -> {
