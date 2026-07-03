@@ -221,7 +221,7 @@ public class Match {
     private void startRound() {
         matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
         removeBall();
-        generateBall(data.cubeBallBlock, name, data.ballSpawn, null);
+        generateBall(data, name, data.ballSpawn, null);
     }
 
     private static void surroundWith(Location base, Material block) {
@@ -585,19 +585,12 @@ public class Match {
 
     private void equipTeamKit(Player player) {
         org.bukkit.inventory.ItemStack chest = new org.bukkit.inventory.ItemStack(Material.LEATHER_CHESTPLATE);
-        org.bukkit.inventory.ItemStack legs = new org.bukkit.inventory.ItemStack(Material.LEATHER_LEGGINGS);
-        org.bukkit.inventory.ItemStack boots = new org.bukkit.inventory.ItemStack(Material.LEATHER_BOOTS);
         org.bukkit.Color color = blueTeam.contains(player) ? org.bukkit.Color.BLUE : org.bukkit.Color.RED;
-        for (org.bukkit.inventory.ItemStack piece : new org.bukkit.inventory.ItemStack[]{chest, legs, boots}) {
-            if (piece.getItemMeta() instanceof org.bukkit.inventory.meta.LeatherArmorMeta) {
-                org.bukkit.inventory.meta.LeatherArmorMeta meta = (org.bukkit.inventory.meta.LeatherArmorMeta) piece.getItemMeta();
-                meta.setColor(color);
-                piece.setItemMeta(meta);
-            }
+        if (chest.getItemMeta() instanceof org.bukkit.inventory.meta.LeatherArmorMeta) {
+            org.bukkit.inventory.meta.LeatherArmorMeta meta = (org.bukkit.inventory.meta.LeatherArmorMeta) chest.getItemMeta();
+            meta.setColor(color);
+            chest.setItemMeta(meta);
         }
-        org.bukkit.inventory.PlayerInventory inv = player.getInventory();
-        inv.setChestplate(chest);
-        inv.setLeggings(legs);
-        inv.setBoots(boots);
+        player.getInventory().setChestplate(chest);
     }
 }

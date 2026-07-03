@@ -14,6 +14,8 @@ public class MatchData {
     public long creatorIdMost, creatorIdLeast;
 
     public Material cubeBallBlock = Material.IRON_BLOCK;
+    /** CraftEngine 自定义内容 id（namespace:path），null 时使用原版 cubeBallBlock。 */
+    public String ballCustomId = null;
     public int matchDuration = 300;
     public int maxGoal = 0;
     public int dashCooldown = 15;
@@ -31,6 +33,7 @@ public class MatchData {
         config.set("creatorIdLeast", creatorIdLeast);
 
         config.set("cubeBallBlock", cubeBallBlock.name());
+        config.set("ballCustomId", ballCustomId);
         config.set("matchDuration", matchDuration);
         config.set("maxGoal", maxGoal);
         config.set("dashCooldown", dashCooldown);
@@ -48,6 +51,7 @@ public class MatchData {
         creatorIdLeast = config.getLong("creatorIdLeast");
 
         cubeBallBlock = getMaterial(config.getString("cubeBallBlock"));
+        ballCustomId = config.getString("ballCustomId");
         matchDuration = config.getInt("matchDuration");
         maxGoal = config.getInt("maxGoal");
         dashCooldown = config.getInt("dashCooldown");

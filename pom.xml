@@ -53,6 +53,10 @@
             <id>papermc</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
         </repository>
+        <repository>
+            <id>momirealms</id>
+            <url>https://repo.momirealms.net/releases/</url>
+        </repository>
     </repositories>
     <dependencies>
         <dependency>
@@ -73,6 +77,18 @@
             <artifactId>annotations</artifactId>
             <version>24.1.0</version>
             <scope>compile</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.momirealms</groupId>
+            <artifactId>craft-engine-core</artifactId>
+            <version>0.0.60</version>
+            <scope>provided</scope>
+        </dependency>
+        <dependency>
+            <groupId>net.momirealms</groupId>
+            <artifactId>craft-engine-bukkit</artifactId>
+            <version>0.0.60</version>
+            <scope>provided</scope>
         </dependency>
     </dependencies>
 </project>

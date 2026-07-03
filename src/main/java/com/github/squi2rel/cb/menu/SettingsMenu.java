@@ -99,6 +99,27 @@ public class SettingsMenu {
                 v.sendTo(p, v.getArgument());
             });
         });
+        String customId = c.ballCustomId;
+        builder.setSlot(6, 1, PAPER, I18n.get("menu_desc_ballcustom"),
+                customId != null && !customId.isEmpty()
+                        ? I18n.format("menu_desc_ballcustom_desc", "id", customId)
+                        : I18n.format("menu_desc_ballcustom_desc", "id", I18n.get("menu_desc_ballcustom_none"))
+        ).setAction((p, v) -> {
+            if (!p.hasPermission("cubeball.admin")) {
+                p.sendMessage(ChatColor.RED + "You do not have permission to do this!");
+                return;
+            }
+            p.sendMessage(I18n.get("menu_desc_ballcustom_input"));
+            p.closeInventory();
+            MenuManager.registerChatHandler(p, s -> {
+                c.ballCustomId = s == null || s.trim().isEmpty() ? null : s.trim();
+                v.sendTo(p, v.getArgument());
+            });
+        }).setRightClickAction((p, v) -> {
+            c.ballCustomId = null;
+            p.sendMessage(I18n.get("menu_desc_ballcustom_cleared"));
+            builder.refresh();
+        });
         builder.setSlot(5, 3, SAND, I18n.get("menu_desc_settime"), I18n.format("menu_desc_settime_desc", "s", c.matchDuration)).setAction((p, v) -> {
             p.sendMessage(I18n.get("menu_sendnumber"));
             p.closeInventory();

@@ -12,8 +12,12 @@ import org.bukkit.*;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.MemoryConfiguration;
+import org.bukkit.entity.Display;
+import org.bukkit.entity.EntityType;
 import org.bukkit.entity.FallingBlock;
+import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 import org.bukkit.metadata.FixedMetadataValue;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
@@ -34,22 +38,38 @@ public class CubeBall extends JavaPlugin {
 
     public static int maxMatchPerPlayer;
 
-    public static void generateBall(Material material, String id, Location location, Vector lastVelocity) {
+    public static void generateBall(MatchData data, String id, Location location, Vector lastVelocity) {
 
         if (balls.get(id) != null) {
             throw new IllegalStateException("Same ID cannot be put on the same ball");
         }
 
-        BlockData blockData = Bukkit.createBlockData(material);
+        BallAppearance appearance = resolveAppearance(data);
+
+        BlockData blockData = appearance.getCarrierBlockData();
         FallingBlock block = Objects.requireNonNull(location.getWorld()).spawnFallingBlock(location, blockData);
         block.setMetadata("ballID", new FixedMetadataValue(plugin, id));
-        block.setGlowing(true);
         block.setDropItem(false);
         block.setInvulnerable(true);
+
+        ItemDisplay display = null;
+        if (appearance.isItemDisplayMode()) {
+            display = (ItemDisplay) location.getWorld().spawnEntity(location, EntityType.ITEM_DISPLAY);
+            display.setItemStack(appearance.getDisplayItem());
+            display.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.FIXED);
+            display.setInvulnerable(true);
+            display.setGlowing(true);
+        } else {
+            block.setGlowing(true);
+        }
 
         Ball ball = new Ball();
         ball.setId(id);
         ball.setBall(block);
+        ball.setDisplay(display);
+        // carrierBlockData 非 null 表示走 CE 路径（方块或物品模式），监听器用 BlockData 比较；
+        // 原版回退保持 null，监听器走原 Material 比较分支，行为与改动前一致。
+        ball.setCarrierBlockData(appearance.isCustomMode() ? blockData : null);
 
         if (lastVelocity != null) {
             ball.getLastVelocity().setX(0);
@@ -61,6 +81,26 @@ public class CubeBall extends JavaPlugin {
         ball.setPhysicsTask(FoliaScheduler.runEntityTimer(block, () -> tickBall(id), 1, 2));
     }
 
+    /**
+     * 解析足球外观：ballCustomId 为空 → 原版 cubeBallBlock 的 BlockData，无显示实体；
+     * 否则尝试 CE 解析，命中用 CE 结果，未命中/CE 未装回退原版并 warn 一次。
+     */
+    private static BallAppearance resolveAppearance(MatchData data) {
+        String customId = data.ballCustomId;
+        if (customId != null && !customId.isEmpty()) {
+            if (CraftEngineHook.isAvailable()) {
+                BallAppearance app = CraftEngineHook.resolve(customId, data.cubeBallBlock);
+                if (app != null) {
+                    return app;
+                }
+                plugin.getLogger().warning("CraftEngine custom id not found: " + customId + ", falling back to " + data.cubeBallBlock);
+            } else {
+                plugin.getLogger().warning("ballCustomId is set (" + customId + ") but CraftEngine is not installed, falling back to " + data.cubeBallBlock);
+            }
+        }
+        return new BallAppearance(Bukkit.createBlockData(data.cubeBallBlock), null, false);
+    }
+
     public static void destroyBall(String id) {
         Ball ballData = balls.remove(id);
         if (ballData != null) {
@@ -68,6 +108,10 @@ public class CubeBall extends JavaPlugin {
             FallingBlock ball = ballData.getBall();
             if (ball != null) {
                 FoliaScheduler.runEntity(ball, ball::remove);
+            }
+            Display display = ballData.getDisplay();
+            if (display != null) {
+                FoliaScheduler.runEntity(display, display::remove);
             }
         }
     }
@@ -246,6 +290,11 @@ public class CubeBall extends JavaPlugin {
 
         ballData.setLastVelocity(ball.getVelocity().clone());
         ballData.setPlayerCollisionTick(ballData.getPlayerCollisionTick() + 1);
+
+        Display display = ballData.getDisplay();
+        if (display != null) {
+            FoliaScheduler.runEntity(display, () -> display.teleport(ball.getLocation()));
+        }
     }
 
     private static TextComponent getDashCooldownText(boolean b, long targetTime) {

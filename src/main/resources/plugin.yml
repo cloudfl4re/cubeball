@@ -5,6 +5,8 @@ author: Crylonz, squi2rel
 description: Play football in Minecraft
 api-version: "1.21.11"
 folia-supported: true
+softdepend:
+  - CraftEngine
 commands:
   ccb:
     permission: cubeball.manage

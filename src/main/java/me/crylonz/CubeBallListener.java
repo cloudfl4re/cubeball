@@ -3,6 +3,7 @@ package me.crylonz;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.Sound;
+import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -33,12 +34,18 @@ public class CubeBallListener implements Listener {
         Match match = matches.get(ballId);
         if (match == null) return;
 
-        Material block = match.getData().cubeBallBlock;
-        if (!e.getTo().equals(block)) return;
-
+        Ball ballData = balls.get(ballId);
+        // 落地判断：CE 路径（carrierBlockData 非 null）用 BlockData 比较；
+        // 原版回退（null）保留原 Material 比较，行为与改动前一致。
+        BlockData carrier = ballData != null ? ballData.getCarrierBlockData() : null;
+        if (carrier != null) {
+            if (!e.getTo().equals(carrier)) return;
+        } else {
+            Material block = match.getData().cubeBallBlock;
+            if (!e.getTo().equals(block)) return;
+        }
         e.setCancelled(true);
 
-        Ball ballData = balls.get(ballId);
         if (ballData == null || ballData.getBall() == null) return;
 
         Vector velocity = ballData.getBall().getVelocity();
@@ -49,7 +56,7 @@ public class CubeBallListener implements Listener {
         velocity.setY(min(maxZX, 0.5));
 
         destroyBall(ballId);
-        generateBall(block, ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
+        generateBall(match.getData(), ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
 
         ballData = balls.get(ballId);
         ballData.getBall().setVelocity(velocity);
