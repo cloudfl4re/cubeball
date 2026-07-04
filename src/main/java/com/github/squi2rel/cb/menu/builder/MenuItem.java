@@ -3,10 +3,11 @@ package com.github.squi2rel.cb.menu.builder;
 import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.ClickType;
+import org.bukkit.inventory.ItemStack;
 
 @SuppressWarnings({"unused", "UnusedReturnValue"})
 public final class MenuItem<T> {
-    private Material item;
+    private ItemStack item;
     private String name, namePrefix;
     private String desc, descPrefix;
     private MenuHandler<T> leftClickAction, rightClickAction;
@@ -15,7 +16,11 @@ public final class MenuItem<T> {
     private MenuHandler.HotbarMenuHandler<T> hotbarAction;
 
     public MenuItem(Material item, String name, String desc, String namePrefix, String descPrefix) {
-        this.item = item;
+        this(item == null ? null : new ItemStack(item), name, desc, namePrefix, descPrefix);
+    }
+
+    public MenuItem(ItemStack item, String name, String desc, String namePrefix, String descPrefix) {
+        this.item = item == null ? null : item.clone();
         this.name = name;
         this.desc = desc;
         this.namePrefix = namePrefix;
@@ -23,11 +28,19 @@ public final class MenuItem<T> {
     }
 
     public Material getItem() {
-        return item;
+        return item == null ? null : item.getType();
+    }
+
+    public ItemStack getItemStack() {
+        return item == null ? null : item.clone();
     }
 
     public void setItem(Material item) {
-        this.item = item;
+        this.item = item == null ? null : new ItemStack(item);
+    }
+
+    public void setItem(ItemStack item) {
+        this.item = item == null ? null : item.clone();
     }
 
     public String getName() {

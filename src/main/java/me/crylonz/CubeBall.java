@@ -13,15 +13,20 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.MemoryConfiguration;
 import org.bukkit.entity.Display;
+import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.FallingBlock;
+import org.bukkit.entity.Item;
 import org.bukkit.entity.ItemDisplay;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
+import org.bukkit.util.Transformation;
 import org.bukkit.metadata.FixedMetadataValue;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
+import org.joml.AxisAngle4f;
+import org.joml.Vector3f;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
@@ -35,41 +40,111 @@ public class CubeBall extends JavaPlugin {
     public static Map<String, Ball> balls = new ConcurrentHashMap<>();
     public static Map<String, Match> matches = new ConcurrentHashMap<>();
     public static Map<UUID, Long> cooldown = new ConcurrentHashMap<>();
+    private static final Set<String> appearanceWarnings = ConcurrentHashMap.newKeySet();
+    private static final Material ITEM_BALL_CARRIER = Material.WHITE_WOOL;
+    private static final double ROLL_DEGREES_PER_BLOCK = 120.0;
 
     public static int maxMatchPerPlayer;
+    public static boolean debugMode;
+    public static boolean ballGlow;
+    public static boolean ballRollEnabled;
+    public static double ballRollSpeed;
 
     public static void generateBall(MatchData data, String id, Location location, Vector lastVelocity) {
-
         if (balls.get(id) != null) {
             throw new IllegalStateException("Same ID cannot be put on the same ball");
         }
+        debug("generateBall id=" + id + " loc=" + formatLocation(location) + " lastVelocity=" + formatVector(lastVelocity));
+        spawnBall(data, id, location, lastVelocity, null);
+    }
 
+    public static Ball respawnBall(MatchData data, String id, Location location, Vector lastVelocity) {
+        Ball previous = balls.remove(id);
+        debug("respawnBall id=" + id + " loc=" + formatLocation(location)
+                + " previous=" + describeBall(previous)
+                + " lastVelocity=" + formatVector(lastVelocity));
+        if (previous != null) {
+            previous.cancelPhysicsTask();
+        }
+
+        Ball next = spawnBall(data, id, location, lastVelocity, null);
+
+        if (previous != null) {
+            Entity previousCarrier = previous.getBall();
+            if (previousCarrier != null) {
+                FoliaScheduler.runEntity(previousCarrier, previousCarrier::remove);
+            }
+            if (previous.getDisplay() != null) {
+                Display oldDisplay = previous.getDisplay();
+                FoliaScheduler.runEntity(oldDisplay, oldDisplay::remove);
+            }
+        }
+
+        return next;
+    }
+
+    private static Ball spawnBall(MatchData data, String id, Location location, Vector lastVelocity, Display reusableDisplay) {
         BallAppearance appearance = resolveAppearance(data);
 
         BlockData blockData = appearance.getCarrierBlockData();
-        FallingBlock block = Objects.requireNonNull(location.getWorld()).spawnFallingBlock(location, blockData);
-        block.setMetadata("ballID", new FixedMetadataValue(plugin, id));
-        block.setDropItem(false);
-        block.setInvulnerable(true);
+        debug("spawnBall id=" + id
+                + " loc=" + formatLocation(location)
+                + " blockData=" + (blockData == null ? "null" : blockData.getAsString())
+                + " itemMode=" + appearance.isItemDisplayMode()
+                + " item=" + describeItem(appearance.getDisplayItem())
+                + " reusableDisplay=" + describeEntity(reusableDisplay));
+        Entity carrier;
+        if (appearance.isItemDisplayMode()) {
+            // 优先用 CE 空白物品作载体（视觉透明），CE 不可用则回退 BARRIER + 不可见
+            ItemStack carrierItem = new ItemStack(Material.BARRIER);
+            if (CraftEngineHook.isAvailable()) {
+                ItemStack ceBlank = CraftEngineHook.buildCustomItemIcon("server_img_library:litesignin_air");
+                if (ceBlank != null) carrierItem = ceBlank;
+            }
+            final ItemStack finalCarrierItem = carrierItem;
+            Item item = Objects.requireNonNull(location.getWorld()).dropItem(location, finalCarrierItem, dropped -> {
+                dropped.setMetadata("ballID", new FixedMetadataValue(plugin, id));
+                dropped.setPickupDelay(Integer.MAX_VALUE);
+                dropped.setCanPlayerPickup(false);
+                dropped.setCanMobPickup(false);
+                dropped.setWillAge(false);
+                dropped.setUnlimitedLifetime(true);
+                dropped.setInvulnerable(true);
+                dropped.setGravity(true);
+                dropped.setSilent(true);
+                dropped.setInvisible(true);
+                dropped.setVelocity(new Vector(0, 0, 0));
+            });
+            carrier = item;
+        } else {
+            FallingBlock block = Objects.requireNonNull(location.getWorld()).spawnFallingBlock(location, blockData);
+            block.setMetadata("ballID", new FixedMetadataValue(plugin, id));
+            block.setDropItem(false);
+            block.setInvulnerable(true);
+            carrier = block;
+        }
 
         ItemDisplay display = null;
         if (appearance.isItemDisplayMode()) {
             display = (ItemDisplay) location.getWorld().spawnEntity(location, EntityType.ITEM_DISPLAY);
             display.setItemStack(appearance.getDisplayItem());
-            display.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.FIXED);
+            // HEAD transform 使用物品的 head display 设置，避免 NONE 带来的等轴视角旋转
+            display.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.HEAD);
+            display.setRotation(0, 0);
             display.setInvulnerable(true);
-            display.setGlowing(true);
+            display.setGlowing(ballGlow);
+            carrier.addPassenger(display);
         } else {
-            block.setGlowing(true);
+            carrier.setGlowing(ballGlow);
         }
 
         Ball ball = new Ball();
         ball.setId(id);
-        ball.setBall(block);
+        ball.setBall(carrier);
         ball.setDisplay(display);
-        // carrierBlockData 非 null 表示走 CE 路径（方块或物品模式），监听器用 BlockData 比较；
-        // 原版回退保持 null，监听器走原 Material 比较分支，行为与改动前一致。
-        ball.setCarrierBlockData(appearance.isCustomMode() ? blockData : null);
+        // carrierBlockData 非 null 表示走 CE 方块路径，监听器用 BlockData 比较；
+        // item mode 和原版回退保持 null
+        ball.setCarrierBlockData(appearance.isCustomMode() && !appearance.isItemDisplayMode() ? blockData : null);
 
         if (lastVelocity != null) {
             ball.getLastVelocity().setX(0);
@@ -78,7 +153,9 @@ public class CubeBall extends JavaPlugin {
 
         ball.setPlayerCollisionTick(0);
         balls.put(id, ball);
-        ball.setPhysicsTask(FoliaScheduler.runEntityTimer(block, () -> tickBall(id), 1, 2));
+        ball.setPhysicsTask(FoliaScheduler.runEntityTimer(carrier, () -> tickBall(id), 1, 2));
+        debug("spawnBall done id=" + id + " carrier=" + describeEntity(carrier) + " display=" + describeEntity(display));
+        return ball;
     }
 
     /**
@@ -86,28 +163,52 @@ public class CubeBall extends JavaPlugin {
      * 否则尝试 CE 解析，命中用 CE 结果，未命中/CE 未装回退原版并 warn 一次。
      */
     private static BallAppearance resolveAppearance(MatchData data) {
+        debug("resolveAppearance customId=" + data.ballCustomId
+                + " customItem=" + describeItem(data.ballCustomItem)
+                + " carrier=" + data.cubeBallBlock);
+        if (data.ballCustomItem != null && !data.ballCustomItem.getType().isAir()) {
+            ItemStack item = data.ballCustomItem.clone();
+            item.setAmount(1);
+            debug("resolveAppearance using saved ItemStack snapshot item=" + describeItem(item)
+                    + " carrier=" + ITEM_BALL_CARRIER);
+            return new BallAppearance(Bukkit.createBlockData(ITEM_BALL_CARRIER), item, true);
+        }
+
         String customId = data.ballCustomId;
         if (customId != null && !customId.isEmpty()) {
             if (CraftEngineHook.isAvailable()) {
                 BallAppearance app = CraftEngineHook.resolve(customId, data.cubeBallBlock);
                 if (app != null) {
+                    debug("resolveAppearance using CraftEngine id=" + customId
+                            + " itemMode=" + app.isItemDisplayMode()
+                            + " item=" + describeItem(app.getDisplayItem()));
+                    if (app.isItemDisplayMode()) {
+                        return new BallAppearance(Bukkit.createBlockData(ITEM_BALL_CARRIER), app.getDisplayItem(), true);
+                    }
                     return app;
                 }
-                plugin.getLogger().warning("CraftEngine custom id not found: " + customId + ", falling back to " + data.cubeBallBlock);
+                warnAppearanceOnce("missing:" + customId, "CraftEngine custom id not found: " + customId + ", falling back to " + data.cubeBallBlock);
             } else {
-                plugin.getLogger().warning("ballCustomId is set (" + customId + ") but CraftEngine is not installed, falling back to " + data.cubeBallBlock);
+                warnAppearanceOnce("no-ce:" + customId, "ballCustomId is set (" + customId + ") but CraftEngine is not installed, falling back to " + data.cubeBallBlock);
             }
         }
         return new BallAppearance(Bukkit.createBlockData(data.cubeBallBlock), null, false);
     }
 
+    private static void warnAppearanceOnce(String key, String message) {
+        if (plugin != null && appearanceWarnings.add(key)) {
+            plugin.getLogger().warning(message);
+        }
+    }
+
     public static void destroyBall(String id) {
         Ball ballData = balls.remove(id);
+        debug("destroyBall id=" + id + " ball=" + describeBall(ballData));
         if (ballData != null) {
             ballData.cancelPhysicsTask();
-            FallingBlock ball = ballData.getBall();
-            if (ball != null) {
-                FoliaScheduler.runEntity(ball, ball::remove);
+            Entity carrier = ballData.getBall();
+            if (carrier != null) {
+                FoliaScheduler.runEntity(carrier, carrier::remove);
             }
             Display display = ballData.getDisplay();
             if (display != null) {
@@ -119,8 +220,14 @@ public class CubeBall extends JavaPlugin {
     public void onEnable() {
         plugin = this;
         FoliaScheduler.init(this);
+        PlayerStateCache.init(this);
 
         saveDefaultConfig();
+
+        debugMode = getConfig().getBoolean("debug", false);
+        ballGlow = getConfig().getBoolean("ball.glow", true);
+        ballRollEnabled = getConfig().getBoolean("ball.roll.enabled", true);
+        ballRollSpeed = getConfig().getDouble("ball.roll.speed", 1.0);
 
         String lang = getConfig().getString("language", "en");
         I18n.init(this, lang);
@@ -166,6 +273,92 @@ public class CubeBall extends JavaPlugin {
         }
         plugin.getConfig().set("matches", section);
         plugin.saveConfig();
+    }
+
+    public static void setDebugMode(boolean enabled) {
+        debugMode = enabled;
+        if (plugin != null) {
+            plugin.getConfig().set("debug", enabled);
+            plugin.saveConfig();
+            plugin.getLogger().info("Debug mode " + (enabled ? "enabled" : "disabled"));
+        }
+    }
+
+    public static void setBallGlow(boolean enabled) {
+        ballGlow = enabled;
+        if (plugin != null) {
+            plugin.getConfig().set("ball.glow", enabled);
+            plugin.saveConfig();
+            balls.values().forEach(ballData -> {
+                Entity carrier = ballData.getBall();
+                Display display = ballData.getDisplay();
+                if (display != null) {
+                    FoliaScheduler.runEntity(display, () -> display.setGlowing(enabled));
+                } else if (carrier != null) {
+                    FoliaScheduler.runEntity(carrier, () -> carrier.setGlowing(enabled));
+                }
+            });
+            plugin.getLogger().info("Ball glow " + (enabled ? "enabled" : "disabled"));
+        }
+    }
+
+    public static void setBallRollEnabled(boolean enabled) {
+        ballRollEnabled = enabled;
+        if (plugin != null) {
+            plugin.getConfig().set("ball.roll.enabled", enabled);
+            plugin.saveConfig();
+            plugin.getLogger().info("Ball roll " + (enabled ? "enabled" : "disabled"));
+        }
+    }
+
+    public static void setBallRollSpeed(double speed) {
+        ballRollSpeed = Math.max(0.0, speed);
+        if (plugin != null) {
+            plugin.getConfig().set("ball.roll.speed", ballRollSpeed);
+            plugin.saveConfig();
+            plugin.getLogger().info("Ball roll speed set to " + ballRollSpeed);
+        }
+    }
+
+    public static void debug(String message) {
+        if (debugMode && plugin != null) {
+            plugin.getLogger().info("[DEBUG] " + message);
+        }
+    }
+
+    public static String describeItem(ItemStack item) {
+        if (item == null) return "null";
+        return item.getType() + "x" + item.getAmount()
+                + " hasMeta=" + item.hasItemMeta()
+                + " meta=" + (item.hasItemMeta() ? item.getItemMeta().getClass().getSimpleName() : "none");
+    }
+
+    private static String describeBall(Ball ball) {
+        if (ball == null) return "null";
+        return "carrier=" + describeEntity(ball.getBall())
+                + " display=" + describeEntity(ball.getDisplay())
+                + " carrier=" + (ball.getCarrierBlockData() == null ? "null" : ball.getCarrierBlockData().getAsString())
+                + " lastVelocity=" + formatVector(ball.getLastVelocity());
+    }
+
+    private static String describeEntity(org.bukkit.entity.Entity entity) {
+        if (entity == null) return "null";
+        return entity.getType() + "{" + entity.getUniqueId()
+                + ",valid=" + entity.isValid()
+                + ",dead=" + entity.isDead()
+                + ",loc=" + formatLocation(entity.getLocation())
+                + "}";
+    }
+
+    private static String formatLocation(Location location) {
+        if (location == null) return "null";
+        return (location.getWorld() == null ? "null" : location.getWorld().getName())
+                + ":" + String.format(Locale.ROOT, "%.2f,%.2f,%.2f", location.getX(), location.getY(), location.getZ());
+    }
+
+    private static String formatVector(Vector vector) {
+        if (vector == null) return "null";
+        return String.format(Locale.ROOT, "%.3f,%.3f,%.3f", vector.getX(), vector.getY(), vector.getZ());
     }
 
     public static void launch(Player player, double power) {
@@ -226,25 +419,40 @@ public class CubeBall extends JavaPlugin {
         Ball ballData = balls.get(id);
         if (ballData == null || ballData.getBall() == null) return;
 
-        FallingBlock ball = ballData.getBall();
+        Entity ball = ballData.getBall();
         if (!ball.isValid() || ball.isDead()) return;
 
         ball.setTicksLived(1);
 
         Match match = matches.get(ballData.getId());
+        boolean itemMode = ballData.getDisplay() != null;
+        double directKickDistance = itemMode ? 1.75 : 1.0;
+        double alignedKickDistance = itemMode ? 3.0 : 2.5;
 
         ball.getNearbyEntities(3, 3, 3)
                 .stream().filter(entity -> entity instanceof Player)
                 .forEach(p -> {
                     Player player = (Player) p;
+                    // 观战玩家不能踢球（containsPlayer 只含红/蓝两队）
+                    if (match != null && !match.containsPlayer(player)) return;
+                    Location playerLocation = player.getLocation();
+                    Location ballLocation = ball.getLocation();
+                    double distance = playerLocation.distance(ballLocation);
                     // if player is colliding the ball
-                    if (player.getLocation().distance(ball.getLocation()) < 1 || (
-                            player.getLocation().distance(ball.getLocation()) < 2.5 &&
-                                    Math.floor(ball.getLocation().getX()) == Math.floor(player.getLocation().getX()) &&
-                                    Math.floor(ball.getLocation().getZ()) == Math.floor(player.getLocation().getZ()))) {
+                    if (distance < directKickDistance || (
+                            distance < alignedKickDistance &&
+                                    Math.floor(ballLocation.getX()) == Math.floor(playerLocation.getX()) &&
+                                    Math.floor(ballLocation.getZ()) == Math.floor(playerLocation.getZ()))) {
 
                         // compute velocity to the ball
                         Vector velocity = getVector(player, ballData);
+                        debug("kick id=" + id
+                                + " mode=" + (itemMode ? "item" : "block")
+                                + " player=" + player.getName()
+                                + " distance=" + String.format(Locale.ROOT, "%.2f", distance)
+                                + " velocity=" + formatVector(velocity)
+                                + " carrier=" + describeEntity(ball)
+                                + " display=" + describeEntity(ballData.getDisplay()));
 
                         // apply ball trajectory
                         ball.setVelocity(velocity);
@@ -257,6 +465,25 @@ public class CubeBall extends JavaPlugin {
                         }
                     }
                 });
+
+        if (ballData.getDisplay() != null && ball.isOnGround() && ballData.getPlayerCollisionTick() > 3) {
+            Vector velocity = ball.getVelocity();
+            double zVelocity = abs(velocity.getZ()) / 1.5;
+            double xVelocity = abs(velocity.getX()) / 1.5;
+            double yVelocity = Math.min(Math.max(zVelocity, xVelocity), 0.5);
+            if (abs(velocity.getX() + velocity.getZ()) <= 0.001 || yVelocity < 0.025) {
+                ball.setVelocity(velocity.zero());
+                ball.setGravity(false);
+            } else {
+                velocity.setY(yVelocity);
+                ball.setVelocity(velocity);
+                ball.setGravity(true);
+                // 只在落地瞬间（上一tick不在地面）播放声音，避免每tick重复播放
+                if (!ballData.isWasOnGround()) {
+                    ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+                }
+            }
+        }
 
         //compute bouncing on other blocks
         if (ballData.getPlayerCollisionTick() > 3) {
@@ -288,13 +515,35 @@ public class CubeBall extends JavaPlugin {
 
         if (balls.get(id) != ballData) return;
 
+        if (itemMode) {
+            tickDisplayRoll(ballData);
+        }
+
         ballData.setLastVelocity(ball.getVelocity().clone());
         ballData.setPlayerCollisionTick(ballData.getPlayerCollisionTick() + 1);
+        ballData.setWasOnGround(ball.isOnGround());
 
+    }
+
+    private static void tickDisplayRoll(Ball ballData) {
         Display display = ballData.getDisplay();
-        if (display != null) {
-            FoliaScheduler.runEntity(display, () -> display.teleport(ball.getLocation()));
-        }
+        Entity carrier = ballData.getBall();
+        if (!ballRollEnabled || ballRollSpeed <= 0 || display == null || carrier == null) return;
+
+        Vector velocity = carrier.getVelocity();
+        double horizontalSpeed = Math.hypot(velocity.getX(), velocity.getZ());
+        if (horizontalSpeed < 0.001) return;
+
+        float roll = (float) ((ballData.getRollAngle() + horizontalSpeed * ROLL_DEGREES_PER_BLOCK * ballRollSpeed) % 360.0);
+        float yaw = (float) Math.toDegrees(Math.atan2(-velocity.getX(), velocity.getZ()));
+        ballData.setRollAngle(roll);
+        display.setRotation(yaw, 0);
+        display.setTransformation(new Transformation(
+                new Vector3f(),
+                new AxisAngle4f((float) Math.toRadians(roll), 1.0f, 0.0f, 0.0f),
+                new Vector3f(1.0f, 1.0f, 1.0f),
+                new AxisAngle4f()
+        ));
     }
 
     private static TextComponent getDashCooldownText(boolean b, long targetTime) {

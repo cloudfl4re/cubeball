@@ -7,12 +7,15 @@ import com.github.squi2rel.cb.menu.builder.MenuBuilder;
 import com.github.squi2rel.cb.menu.builder.MenuContext;
 import com.github.squi2rel.cb.menu.builder.MenuManager;
 import com.github.squi2rel.cb.util.BlockScanUtil;
+import me.crylonz.CraftEngineHook;
 import me.crylonz.CubeBall;
 import me.crylonz.Match;
 import me.crylonz.MatchState;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
+import org.bukkit.entity.Player;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -94,17 +97,37 @@ public class SettingsMenu {
                 if (m == null || !m.isBlock() || m.isAir() || !m.isItem()) {
                     p.sendMessage(I18n.get("menu_desc_invalid_material"));
                     v.sendTo(p, v.getArgument());
+                    return;
                 }
                 c.cubeBallBlock = m;
                 v.sendTo(p, v.getArgument());
             });
         });
         String customId = c.ballCustomId;
-        builder.setSlot(6, 1, PAPER, I18n.get("menu_desc_ballcustom"),
-                customId != null && !customId.isEmpty()
-                        ? I18n.format("menu_desc_ballcustom_desc", "id", customId)
-                        : I18n.format("menu_desc_ballcustom_desc", "id", I18n.get("menu_desc_ballcustom_none"))
-        ).setAction((p, v) -> {
+        builder.setSlot(6, 1, getBallCustomIcon(c), I18n.get("menu_desc_ballcustom"),
+                getBallCustomDesc(c)
+        ).setLeftClickAction((p, v) -> {
+            if (!p.hasPermission("cubeball.admin")) {
+                p.sendMessage(ChatColor.RED + "You do not have permission to do this!");
+                return;
+            }
+            ItemStack hand = p.getInventory().getItemInMainHand();
+            if (hand == null || hand.getType().isAir()) {
+                p.sendMessage(I18n.get("menu_desc_ballcustom_not_item"));
+                return;
+            }
+            String id = CraftEngineHook.getCustomItemId(hand);
+            ItemStack snapshot = hand.clone();
+            snapshot.setAmount(1);
+            c.ballCustomId = id;
+            c.ballCustomItem = snapshot;
+            CubeBall.save();
+            CubeBall.debug("menu custom item set match=" + match.getName()
+                    + " id=" + id
+                    + " item=" + CubeBall.describeItem(snapshot));
+            p.sendMessage(I18n.format("menu_desc_ballcustom_set", "id", id == null ? snapshot.getType().name() : id));
+            builder.refresh();
+        }).setLeftShiftClickAction((p, v) -> {
             if (!p.hasPermission("cubeball.admin")) {
                 p.sendMessage(ChatColor.RED + "You do not have permission to do this!");
                 return;
@@ -112,11 +135,18 @@ public class SettingsMenu {
             p.sendMessage(I18n.get("menu_desc_ballcustom_input"));
             p.closeInventory();
             MenuManager.registerChatHandler(p, s -> {
-                c.ballCustomId = s == null || s.trim().isEmpty() ? null : s.trim();
+                if (!setBallCustomId(c, p, s)) {
+                    v.sendTo(p, v.getArgument());
+                    return;
+                }
+                CubeBall.save();
                 v.sendTo(p, v.getArgument());
             });
         }).setRightClickAction((p, v) -> {
             c.ballCustomId = null;
+            c.ballCustomItem = null;
+            CubeBall.save();
+            CubeBall.debug("menu custom item cleared match=" + match.getName());
             p.sendMessage(I18n.get("menu_desc_ballcustom_cleared"));
             builder.refresh();
         });
@@ -243,6 +273,58 @@ public class SettingsMenu {
             menu.sendTo(p, 0);
         });
     }).build(); // TODO pause & resume, personal ball, static or random spawn ...
+
+    private static ItemStack getBallCustomIcon(MatchData data) {
+        if (data.ballCustomItem != null && !data.ballCustomItem.getType().isAir()) {
+            ItemStack icon = data.ballCustomItem.clone();
+            icon.setAmount(1);
+            return icon;
+        }
+        if (data.ballCustomId != null && !data.ballCustomId.isEmpty() && CraftEngineHook.isAvailable()) {
+            ItemStack icon = CraftEngineHook.buildCustomItemIcon(data.ballCustomId);
+            if (icon != null) return icon;
+        }
+        return new ItemStack(PAPER);
+    }
+
+    private static String getBallCustomDesc(MatchData data) {
+        String current = data.ballCustomId;
+        if ((current == null || current.isEmpty()) && data.ballCustomItem != null) {
+            current = data.ballCustomItem.getType().name();
+        }
+        return I18n.format("menu_desc_ballcustom_desc", "id",
+                current != null && !current.isEmpty() ? current : I18n.get("menu_desc_ballcustom_none"));
+    }
+
+    private static boolean setBallCustomId(MatchData data, Player player, String input) {
+        String id = input == null ? "" : input.trim();
+        if (id.isEmpty()) {
+            data.ballCustomId = null;
+            data.ballCustomItem = null;
+            player.sendMessage(I18n.get("menu_desc_ballcustom_cleared"));
+            return true;
+        }
+        if (CraftEngineHook.isAvailable()) {
+            if (!CraftEngineHook.hasCustomContent(id)) {
+                player.sendMessage(I18n.get("menu_desc_ballcustom_invalid"));
+                return false;
+            }
+        } else if (!looksLikeCustomId(id)) {
+            player.sendMessage(I18n.get("menu_desc_ballcustom_invalid"));
+            return false;
+        } else {
+            player.sendMessage(I18n.get("menu_desc_ballcustom_ce_missing"));
+        }
+        data.ballCustomId = id;
+        data.ballCustomItem = null;
+        CubeBall.debug("menu custom id set id=" + id + " item snapshot cleared");
+        player.sendMessage(I18n.format("menu_desc_ballcustom_set", "id", id));
+        return true;
+    }
+
+    private static boolean looksLikeCustomId(String id) {
+        return id.matches("[a-z0-9_.-]+:[a-z0-9_./-]+");
+    }
 
     private static Material getState(MatchState state) {
         return state == MatchState.CREATED ? GRAY_CONCRETE : state == MatchState.READY ? YELLOW_CONCRETE : LIME_CONCRETE;

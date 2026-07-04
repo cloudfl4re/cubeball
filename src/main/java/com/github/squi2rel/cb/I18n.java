@@ -2,10 +2,12 @@ package com.github.squi2rel.cb;
 
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.plugin.Plugin;
+
 import java.io.File;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 
@@ -13,41 +15,41 @@ public class I18n {
     private static YamlConfiguration messages;
 
     public static void init(Plugin plugin, String language) {
-        File file = new File(plugin.getDataFolder(), "messages." + language + ".yml");
+        String resourceName = "messages." + language + ".yml";
+        YamlConfiguration defaults = loadResource(plugin, resourceName);
+        if (defaults == null) {
+            resourceName = "messages.en.yml";
+            defaults = loadResource(plugin, resourceName);
+        }
+
+        if (!plugin.getDataFolder().exists()) {
+            plugin.getDataFolder().mkdirs();
+        }
+
+        File file = new File(plugin.getDataFolder(), resourceName);
         if (!file.exists()) {
-            String resourceName = "messages." + language + ".yml";
             try {
                 InputStream in = plugin.getResource(resourceName);
                 if (in != null) {
                     Files.copy(in, file.toPath(), StandardCopyOption.REPLACE_EXISTING);
                     in.close();
-                } else {
-                    resourceName = "messages.en.yml";
-                    in = plugin.getResource(resourceName);
-                    File en = new File(plugin.getDataFolder(), "messages.en.yml");
-                    if (in != null) {
-                        Files.copy(in, en.toPath(), StandardCopyOption.REPLACE_EXISTING);
-                        in.close();
-                        file = en;
-                    }
                 }
             } catch (IOException ignored) {
             } catch (Exception e) {
                 throw new RuntimeException(e);
             }
         }
-        if (!file.exists()) {
-            InputStream in = plugin.getResource("messages.en.yml");
-            if (in != null) {
-                messages = YamlConfiguration.loadConfiguration(new InputStreamReader(in));
+
+        messages = file.exists() ? YamlConfiguration.loadConfiguration(file) : new YamlConfiguration();
+        if (defaults != null) {
+            messages.setDefaults(defaults);
+            if (copyMissing(defaults, messages)) {
                 try {
-                    in.close();
-                } catch (IOException ignore) {
+                    messages.save(file);
+                } catch (IOException ignored) {
                 }
-                return;
             }
         }
-        messages = YamlConfiguration.loadConfiguration(file);
     }
 
     public static String get(String key) {
@@ -60,5 +62,25 @@ public class I18n {
             msg = msg.replace("{" + args[i] + "}", String.valueOf(args[i + 1]));
         }
         return msg;
+    }
+
+    private static YamlConfiguration loadResource(Plugin plugin, String resourceName) {
+        InputStream in = plugin.getResource(resourceName);
+        if (in == null) return null;
+        try (InputStreamReader reader = new InputStreamReader(in, StandardCharsets.UTF_8)) {
+            return YamlConfiguration.loadConfiguration(reader);
+        } catch (IOException ignored) {
+            return null;
+        }
+    }
+
+    private static boolean copyMissing(YamlConfiguration defaults, YamlConfiguration target) {
+        boolean changed = false;
+        for (String key : defaults.getKeys(true)) {
+            if (defaults.isConfigurationSection(key) || target.contains(key, true)) continue;
+            target.set(key, defaults.get(key));
+            changed = true;
+        }
+        return changed;
     }
 }

@@ -31,9 +31,10 @@ class MenuBuilderBase {
 
     protected static <T> void setMenuItem(MenuItem<T> item, Inventory inventory, int i) {
         if (item == null) return;
-        Material type = item.getItem();
+        ItemStack stack = item.getItemStack();
+        if (stack == null) return;
+        Material type = stack.getType();
         if (type == null || type.isAir()) return;
-        ItemStack stack = new ItemStack(item.getItem());
         ItemMeta meta = Objects.requireNonNull(stack.getItemMeta());
         meta.setDisplayName(ChatColor.RESET + item.getPrefix() + item.getName());
         String desc = item.getDesc();

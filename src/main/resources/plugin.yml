@@ -11,7 +11,7 @@ commands:
   ccb:
     permission: cubeball.manage
     description: Control command
-    usage: /ccb
+    usage: /ccb [debug on|off|glow on|off|roll on|off|roll speed <number>|setballhand <match>|setballce <match> <namespace:id|clear>]
 permissions:
   cubeball.manage:
     description: Allows player to manage cubeball

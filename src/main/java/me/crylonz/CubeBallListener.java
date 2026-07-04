@@ -46,29 +46,42 @@ public class CubeBallListener implements Listener {
         }
         e.setCancelled(true);
 
-        if (ballData == null || ballData.getBall() == null) return;
+        if (ballData == null || ballData.getBall() == null) {
+            debug("landing ignored id=" + ballId + " ballData missing");
+            return;
+        }
 
         Vector velocity = ballData.getBall().getVelocity();
+        debug("landing id=" + ballId
+                + " to=" + e.getTo()
+                + " carrier=" + (carrier == null ? "vanilla:" + match.getData().cubeBallBlock : carrier.getAsString())
+                + " loc=" + e.getEntity().getLocation()
+                + " oldVelocity=" + velocity
+                + " valid=" + ballData.getBall().isValid()
+                + " dead=" + ballData.getBall().isDead());
         double zVelocity = abs(velocity.getZ()) / 1.5;
         double xVelocity = abs(velocity.getX()) / 1.5;
         double maxZX = max(zVelocity, xVelocity);
 
         velocity.setY(min(maxZX, 0.5));
 
-        destroyBall(ballId);
-        generateBall(match.getData(), ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
-
-        ballData = balls.get(ballId);
+        ballData = respawnBall(match.getData(), ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
         ballData.getBall().setVelocity(velocity);
 
         if (abs(velocity.getX() + velocity.getY() + velocity.getZ()) <= 0.001 || velocity.getY() < 0.025) {
             ballData.getBall().setVelocity(ballData.getBall().getVelocity().zero());
             ballData.getBall().setGravity(false);
         } else {
+            ballData.getBall().setGravity(true);
             if (abs(velocity.getX() + velocity.getY() + velocity.getZ()) > 0.1) {
                 ballData.getBall().getWorld().playSound(ballData.getBall().getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
             }
         }
+        debug("landing complete id=" + ballId
+                + " newVelocity=" + ballData.getBall().getVelocity()
+                + " gravity=" + ballData.getBall().hasGravity()
+                + " valid=" + ballData.getBall().isValid()
+                + " dead=" + ballData.getBall().isDead());
     }
 
     @EventHandler

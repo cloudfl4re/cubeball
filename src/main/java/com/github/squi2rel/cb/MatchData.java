@@ -1,8 +1,10 @@
 package com.github.squi2rel.cb;
 
+import me.crylonz.CubeBall;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.ArrayList;
 import java.util.List;
@@ -16,6 +18,7 @@ public class MatchData {
     public Material cubeBallBlock = Material.IRON_BLOCK;
     /** CraftEngine 自定义内容 id（namespace:path），null 时使用原版 cubeBallBlock。 */
     public String ballCustomId = null;
+    public ItemStack ballCustomItem = null;
     public int matchDuration = 300;
     public int maxGoal = 0;
     public int dashCooldown = 15;
@@ -34,6 +37,7 @@ public class MatchData {
 
         config.set("cubeBallBlock", cubeBallBlock.name());
         config.set("ballCustomId", ballCustomId);
+        config.set("ballCustomItem", ballCustomItem);
         config.set("matchDuration", matchDuration);
         config.set("maxGoal", maxGoal);
         config.set("dashCooldown", dashCooldown);
@@ -43,6 +47,7 @@ public class MatchData {
         config.set("redTeamGoalBlocks", redTeamGoalBlocks);
         config.set("blueTeamSpawns", blueTeamSpawns);
         config.set("redTeamSpawns", redTeamSpawns);
+        CubeBall.debug("MatchData.write customId=" + ballCustomId + " customItem=" + CubeBall.describeItem(ballCustomItem));
     }
 
     public void read(ConfigurationSection config) {
@@ -50,8 +55,11 @@ public class MatchData {
         creatorIdMost = config.getLong("creatorIdMost");
         creatorIdLeast = config.getLong("creatorIdLeast");
 
-        cubeBallBlock = getMaterial(config.getString("cubeBallBlock"));
+        Material material = getMaterial(config.getString("cubeBallBlock"));
+        cubeBallBlock = material == null ? Material.IRON_BLOCK : material;
         ballCustomId = config.getString("ballCustomId");
+        ballCustomItem = config.getItemStack("ballCustomItem");
+        if (ballCustomItem != null) ballCustomItem.setAmount(1);
         matchDuration = config.getInt("matchDuration");
         maxGoal = config.getInt("maxGoal");
         dashCooldown = config.getInt("dashCooldown");
@@ -61,6 +69,7 @@ public class MatchData {
         redTeamGoalBlocks = getLocations(config, "redTeamGoalBlocks");
         blueTeamSpawns = getLocations(config, "blueTeamSpawns");
         redTeamSpawns = getLocations(config, "redTeamSpawns");
+        CubeBall.debug("MatchData.read customId=" + ballCustomId + " customItem=" + CubeBall.describeItem(ballCustomItem));
     }
 
     public static MatchData create(String name, UUID uuid) {

@@ -5,6 +5,7 @@ import org.bukkit.Material;
 import org.bukkit.entity.Player;
 import org.bukkit.event.inventory.ClickType;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemStack;
 
 import java.util.Arrays;
 import java.util.List;
@@ -23,6 +24,12 @@ public class DynamicMenuBuilder<T> extends MenuBuilderBase {
     }
 
     public MenuItem<T> setSlot(int column, int row, Material item, String name, String desc) {
+        MenuItem<T> element = new MenuItem<>(item, name, desc, prefix, lorePrefix);
+        Objects.requireNonNull(context).items.set(row * 9 + column, element);
+        return element;
+    }
+
+    public MenuItem<T> setSlot(int column, int row, ItemStack item, String name, String desc) {
         MenuItem<T> element = new MenuItem<>(item, name, desc, prefix, lorePrefix);
         Objects.requireNonNull(context).items.set(row * 9 + column, element);
         return element;

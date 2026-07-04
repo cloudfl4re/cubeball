@@ -3,6 +3,7 @@ package me.crylonz;
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.util.FoliaScheduler;
+import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.entity.Entity;
@@ -34,6 +35,8 @@ public class Match {
     private volatile int blueScore = 0;
     private volatile int redScore = 0;
     private volatile boolean canceled;
+    private final AtomicInteger roundGeneration = new AtomicInteger();
+    private final Set<ScheduledTask> roundTasks = ConcurrentHashMap.newKeySet();
     private final MatchData data;
 
     public Match(String name, Player player) {
@@ -185,6 +188,7 @@ public class Match {
     }
 
     private void startDelayedRound() {
+        int roundToken = beginRoundSequence();
         teleportTeam(blueTeam, data.blueTeamSpawns);
         teleportTeam(redTeam, data.redTeamSpawns);
 
@@ -200,14 +204,14 @@ public class Match {
             player.setVelocity(new Vector(0, 0, 0));
             player.addPotionEffect(effect);
         });
-        FoliaScheduler.runGlobalLater(() -> sendMessageToAllPlayer(I18n.get("countdown_3"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 20);
-        FoliaScheduler.runGlobalLater(() -> sendMessageToAllPlayer(I18n.get("countdown_2"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 40);
-        FoliaScheduler.runGlobalLater(() -> sendMessageToAllPlayer(I18n.get("countdown_1"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 60);
-        FoliaScheduler.runGlobalLater(() -> {
+        scheduleRoundTask(roundToken, () -> sendMessageToAllPlayer(I18n.get("countdown_3"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 20);
+        scheduleRoundTask(roundToken, () -> sendMessageToAllPlayer(I18n.get("countdown_2"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 40);
+        scheduleRoundTask(roundToken, () -> sendMessageToAllPlayer(I18n.get("countdown_1"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 60);
+        scheduleRoundTask(roundToken, () -> {
             sendMessageToAllPlayer(I18n.get("go"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 2);
             for (Location spawn : getAllSpawns()) setSurrounding(spawn, Material.AIR);
-            if (canceled) return;
-            FoliaScheduler.runRegion(data.ballSpawn, this::startRound);
+            if (!isRoundActive(roundToken)) return;
+            FoliaScheduler.runRegion(data.ballSpawn, () -> startRound(roundToken));
         }, 80);
     }
 
@@ -218,10 +222,54 @@ public class Match {
         return allSpawns;
     }
 
-    private void startRound() {
+    private void startRound(int roundToken) {
+        if (!isRoundActive(roundToken)) return;
         matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
         removeBall();
         generateBall(data, name, data.ballSpawn, null);
+    }
+
+    private int beginRoundSequence() {
+        cancelRoundTasks(false);
+        return roundGeneration.incrementAndGet();
+    }
+
+    private void scheduleGoalRestart() {
+        cancelRoundTasks(false);
+        int roundToken = roundGeneration.incrementAndGet();
+        ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
+            if (roundGeneration.get() != roundToken || canceled || matchState != GOAL) return;
+            startDelayedRound();
+        }, 20 * 3);
+        roundTasks.add(task);
+    }
+
+    private void scheduleRoundTask(int roundToken, Runnable runnable, long delayTicks) {
+        ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
+            if (!isRoundActive(roundToken)) return;
+            runnable.run();
+        }, delayTicks);
+        roundTasks.add(task);
+    }
+
+    private boolean isRoundActive(int roundToken) {
+        MatchState state = matchState;
+        return roundGeneration.get() == roundToken && !canceled && (state == IN_PROGRESS || state == GOAL || state == OVERTIME);
+    }
+
+    private void invalidateRoundSequence() {
+        roundGeneration.incrementAndGet();
+        cancelRoundTasks(true);
+    }
+
+    private void cancelRoundTasks(boolean clearBarriers) {
+        for (ScheduledTask task : roundTasks) {
+            if (task != null) task.cancel();
+        }
+        roundTasks.clear();
+        if (clearBarriers) {
+            for (Location spawn : getAllSpawns()) setSurrounding(spawn, Material.AIR);
+        }
     }
 
     private static void surroundWith(Location base, Material block) {
@@ -317,7 +365,7 @@ public class Match {
         if (matchState == IN_PROGRESS && (data.maxGoal <= 0 || (blueScore != data.maxGoal && redScore != data.maxGoal))) {
             sendScoreToPlayer();
             matchState = GOAL;
-            FoliaScheduler.runGlobalLater(this::startDelayedRound, 20 * 3);
+            scheduleGoalRestart();
         } else {
             matchState = GOAL;
             endMatch();
@@ -342,6 +390,7 @@ public class Match {
     }
 
     public void endMatch() {
+        invalidateRoundSequence();
         String title;
         if (getBlueScore() > getRedScore()) {
             title = I18n.get("blue_win");
@@ -387,6 +436,7 @@ public class Match {
     }
 
     public void reset() {
+        invalidateRoundSequence();
         setMatchState(READY);
         blueScore = 0;
         redScore = 0;
@@ -395,6 +445,7 @@ public class Match {
     }
 
     public void cancel() {
+        invalidateRoundSequence();
         removeBall();
         reset();
         canceled = true;
@@ -573,6 +624,7 @@ public class Match {
 
     public boolean resume() {
         if (matchState == PAUSED) {
+            matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
             startDelayedRound();
             return true;
         }
