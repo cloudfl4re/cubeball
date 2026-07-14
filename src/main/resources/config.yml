@@ -1,6 +1,7 @@
 language: zh
 maxMatchPerPlayer: 3
 debug: false
+lobbySpawn: null
 ball:
   glow: true
   roll:

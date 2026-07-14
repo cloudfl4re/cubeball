@@ -2,17 +2,22 @@ package com.github.squi2rel.cb;
 
 import com.github.squi2rel.cb.menu.SettingsMenu;
 import com.github.squi2rel.cb.menu.builder.MenuManager;
+import com.github.squi2rel.cb.util.FoliaScheduler;
 import me.crylonz.CubeBall;
 import me.crylonz.CraftEngineHook;
 import me.crylonz.Match;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
+import org.bukkit.command.TabCompleter;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.jetbrains.annotations.NotNull;
 
-public class CCBCommand implements CommandExecutor {
+import java.util.ArrayList;
+import java.util.List;
+
+public class CCBCommand implements CommandExecutor, TabCompleter {
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
         if (args.length > 0 && args[0].equalsIgnoreCase("debug")) {
@@ -142,9 +147,81 @@ public class CCBCommand implements CommandExecutor {
             sender.sendMessage("[CCB] CraftEngine ball set for " + match.getName() + ": " + id);
             return true;
         }
+        if (args.length > 0 && args[0].equalsIgnoreCase("rsreview")) {
+            if (!sender.hasPermission("cubeball.admin")) {
+                sender.sendMessage("You do not have permission to do this!");
+                return true;
+            }
+            if (!(sender instanceof Player)) {
+                sender.sendMessage("[CCB] This command can only be used by a player.");
+                return true;
+            }
+            if (args.length < 4) {
+                sender.sendMessage("[CCB] Usage: /ccb rsreview <match> <requestId> <approve|deny>");
+                return true;
+            }
+            Match match = CubeBall.matches.get(args[1]);
+            if (match == null) {
+                sender.sendMessage("[CCB] Match not found: " + args[1]);
+                return true;
+            }
+            int requestId = tryParseInt(args[2], -1);
+            boolean approve = args[3].equalsIgnoreCase("approve") || args[3].equalsIgnoreCase("yes") || args[3].equalsIgnoreCase("true");
+            boolean deny = args[3].equalsIgnoreCase("deny") || args[3].equalsIgnoreCase("no") || args[3].equalsIgnoreCase("false");
+            if (requestId < 0 || (!approve && !deny)) {
+                sender.sendMessage("[CCB] Usage: /ccb rsreview <match> <requestId> <approve|deny>");
+                return true;
+            }
+            Player admin = (Player) sender;
+            FoliaScheduler.runGlobal(() -> {
+                String result = match.reviewRs(admin, requestId, approve);
+                FoliaScheduler.runEntity(admin, () -> admin.sendMessage("[CCB] " + result));
+            });
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("forceunpause")) {
+            if (!sender.hasPermission("cubeball.admin")) {
+                sender.sendMessage("You do not have permission to do this!");
+                return true;
+            }
+            Match match;
+            if (args.length >= 2) {
+                match = CubeBall.matches.get(args[1]);
+                if (match == null) {
+                    sender.sendMessage("[CCB] Match not found: " + args[1]);
+                    return true;
+                }
+            } else {
+                if (!(sender instanceof Player player)) {
+                    sender.sendMessage("[CCB] Usage: /ccb forceunpause <match>");
+                    return true;
+                }
+                match = findPlayerMatch(player);
+                if (match == null) {
+                    sender.sendMessage("[CCB] Cannot find your match. Use /ccb forceunpause <match>.");
+                    return true;
+                }
+            }
+            Match target = match;
+            FoliaScheduler.runGlobal(() -> sendCommandMessage(sender, "[CCB] " + target.forceUnpause()));
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("spawn")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("[CCB] This command can only be used by a player.");
+                return true;
+            }
+            if (!sender.hasPermission("cubeball.admin")) {
+                sender.sendMessage("You do not have permission to do this!");
+                return true;
+            }
+            CubeBall.setLobbySpawn(player.getLocation());
+            sender.sendMessage(I18n.get("lobby_spawn_set"));
+            return true;
+        }
         if (!(sender instanceof Player)) return true;
         Player player = (Player) sender;
-        MenuManager.openMenu(player, () -> SettingsMenu.settings.sendTo(player));
+        SettingsMenu.settings.sendTo(player);
         return true;
     }
 
@@ -162,7 +239,60 @@ public class CCBCommand implements CommandExecutor {
         }
     }
 
+    private int tryParseInt(String value, int fallback) {
+        try {
+            return Integer.parseInt(value);
+        } catch (NumberFormatException ignored) {
+            return fallback;
+        }
+    }
+
     private boolean looksLikeCustomId(String id) {
         return id.matches("[a-z0-9_.-]+:[a-z0-9_./-]+");
+    }
+
+    private Match findPlayerMatch(Player player) {
+        for (Match match : CubeBall.matches.values()) {
+            if (match.hasPlayer(player)) return match;
+        }
+        return null;
+    }
+
+    private void sendCommandMessage(CommandSender sender, String message) {
+        if (sender instanceof Player player) {
+            FoliaScheduler.runEntity(player, () -> player.sendMessage(message));
+        } else {
+            sender.sendMessage(message);
+        }
+    }
+
+    @Override
+    public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
+        if (args.length == 1) {
+            return filter(args[0], List.of("debug", "glow", "roll", "setballhand", "setballce", "rsreview", "forceunpause", "spawn"));
+        }
+        if (args.length == 2) {
+            if (args[0].equalsIgnoreCase("debug") || args[0].equalsIgnoreCase("glow")) {
+                return filter(args[1], List.of("on", "off"));
+            }
+            if (args[0].equalsIgnoreCase("roll")) {
+                return filter(args[1], List.of("on", "off", "speed"));
+            }
+            if (args[0].equalsIgnoreCase("setballhand") || args[0].equalsIgnoreCase("setballce")) {
+                return filter(args[1], new ArrayList<>(CubeBall.matches.keySet()));
+            }
+            if (args[0].equalsIgnoreCase("forceunpause")) {
+                return filter(args[1], new ArrayList<>(CubeBall.matches.keySet()));
+            }
+        }
+        if (args.length == 3 && args[0].equalsIgnoreCase("setballce")) {
+            return filter(args[2], List.of("clear", "namespace:id"));
+        }
+        return List.of();
+    }
+
+    private List<String> filter(String input, List<String> values) {
+        String lower = input.toLowerCase();
+        return values.stream().filter(value -> value.toLowerCase().startsWith(lower)).toList();
     }
 }

@@ -1,17 +1,19 @@
 name: cubeball
 main: me.crylonz.CubeBall
 version: 1.0.0
-author: Crylonz, squi2rel
+author: Crylonz, squi2rel, cloudfl4re
 description: Play football in Minecraft
 api-version: "1.21.11"
 folia-supported: true
 softdepend:
   - CraftEngine
+  - emotecraft
+  - BodySize
 commands:
   ccb:
     permission: cubeball.manage
     description: Control command
-    usage: /ccb [debug on|off|glow on|off|roll on|off|roll speed <number>|setballhand <match>|setballce <match> <namespace:id|clear>]
+    usage: /ccb [debug|glow|roll|setballhand|setballce|spawn]
 permissions:
   cubeball.manage:
     description: Allows player to manage cubeball

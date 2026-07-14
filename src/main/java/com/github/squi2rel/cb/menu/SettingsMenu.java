@@ -1,12 +1,12 @@
 package com.github.squi2rel.cb.menu;
 
 import com.github.squi2rel.cb.I18n;
+import com.github.squi2rel.cb.GoalSelectionManager;
 import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.menu.builder.DynamicMenuBuilder;
 import com.github.squi2rel.cb.menu.builder.MenuBuilder;
 import com.github.squi2rel.cb.menu.builder.MenuContext;
 import com.github.squi2rel.cb.menu.builder.MenuManager;
-import com.github.squi2rel.cb.util.BlockScanUtil;
 import me.crylonz.CraftEngineHook;
 import me.crylonz.CubeBall;
 import me.crylonz.Match;
@@ -58,17 +58,21 @@ public class SettingsMenu {
             c.blueTeamSpawns.clear();
             builder.refresh();
         });
-        builder.setSlot(1, 3, RED_CONCRETE, I18n.get("menu_desc_redgoal"), I18n.format("menu_desc_addgoal_desc", "c", c.redTeamGoalBlocks.size())).setAction((p, v) -> {
-            c.redTeamGoalBlocks = BlockScanUtil.scanXZ(entityToBlock(p.getLocation().add(0, -0.5, 0)), 128);
-            builder.refresh();
+        builder.setSlot(1, 3, RED_CONCRETE, I18n.get("menu_desc_redgoal"), I18n.format("menu_desc_addgoal_desc", "c", c.getRedTeamGoalSize())).setAction((p, v) -> {
+            GoalSelectionManager.begin(p, c, true);
+            p.closeInventory();
         }).setRightClickAction((p, v) -> {
+            c.redTeamGoalPos1 = null;
+            c.redTeamGoalPos2 = null;
             c.redTeamGoalBlocks.clear();
             builder.refresh();
         });
-        builder.setSlot(3, 3, BLUE_CONCRETE, I18n.get("menu_desc_bluegoal"), I18n.format("menu_desc_addgoal_desc", "c", c.blueTeamGoalBlocks.size())).setAction((p, v) -> {
-            c.blueTeamGoalBlocks = BlockScanUtil.scanXZ(entityToBlock(p.getLocation().add(0, -0.5, 0)), 128);
-            builder.refresh();
+        builder.setSlot(3, 3, BLUE_CONCRETE, I18n.get("menu_desc_bluegoal"), I18n.format("menu_desc_addgoal_desc", "c", c.getBlueTeamGoalSize())).setAction((p, v) -> {
+            GoalSelectionManager.begin(p, c, false);
+            p.closeInventory();
         }).setRightClickAction((p, v) -> {
+            c.blueTeamGoalPos1 = null;
+            c.blueTeamGoalPos2 = null;
             c.blueTeamGoalBlocks.clear();
             builder.refresh();
         });
@@ -190,8 +194,8 @@ public class SettingsMenu {
             if (c.ballSpawn != null &&
                     !c.blueTeamSpawns.isEmpty() &&
                     !c.redTeamSpawns.isEmpty() &&
-                    !c.blueTeamGoalBlocks.isEmpty() &&
-                    !c.redTeamGoalBlocks.isEmpty() &&
+                    c.hasBlueTeamGoalArea() &&
+                    c.hasRedTeamGoalArea() &&
                     match.getMatchState() == MatchState.READY) {
                 builder.setSlot(6, 2, LIME_WOOL, I18n.get("menu_desc_start"), null).setAction((p, v) -> {
                     match.start(p);
@@ -320,6 +324,44 @@ public class SettingsMenu {
         CubeBall.debug("menu custom id set id=" + id + " item snapshot cleared");
         player.sendMessage(I18n.format("menu_desc_ballcustom_set", "id", id));
         return true;
+    }
+
+    private static boolean setGoalRegion(MatchData data, Player player, String input, boolean redTeamGoal) {
+        Location[] corners = parseGoalCorners(player, input);
+        if (corners == null) {
+            player.sendMessage(I18n.get("menu_desc_goal_invalid"));
+            return false;
+        }
+        if (redTeamGoal) {
+            data.redTeamGoalPos1 = corners[0];
+            data.redTeamGoalPos2 = corners[1];
+            data.redTeamGoalBlocks.clear();
+        } else {
+            data.blueTeamGoalPos1 = corners[0];
+            data.blueTeamGoalPos2 = corners[1];
+            data.blueTeamGoalBlocks.clear();
+        }
+        CubeBall.save();
+        player.sendMessage(I18n.get("menu_desc_goal_set"));
+        return true;
+    }
+
+    private static Location[] parseGoalCorners(Player player, String input) {
+        if (input == null) return null;
+        String[] parts = input.trim().split("[,;\\s]+", -1);
+        if (parts.length != 6) return null;
+        int[] coords = new int[6];
+        for (int i = 0; i < parts.length; i++) {
+            try {
+                coords[i] = (int) Math.floor(Double.parseDouble(parts[i]));
+            } catch (NumberFormatException e) {
+                return null;
+            }
+        }
+        return new Location[]{
+                new Location(player.getWorld(), coords[0], coords[1], coords[2]),
+                new Location(player.getWorld(), coords[3], coords[4], coords[5])
+        };
     }
 
     private static boolean looksLikeCustomId(String id) {

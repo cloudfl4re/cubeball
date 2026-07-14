@@ -43,13 +43,16 @@ public class CubeBall extends JavaPlugin {
     private static final Set<String> appearanceWarnings = ConcurrentHashMap.newKeySet();
     private static final Material ITEM_BALL_CARRIER = Material.WHITE_WOOL;
     private static final double ROLL_DEGREES_PER_BLOCK = 120.0;
+    private static final double GOALKEEPER_GOAL_RADIUS = 3.0;
+    private static final double GOALKEEPER_DIRECT_KICK_DISTANCE = 3.0;
+    private static final double GOALKEEPER_ALIGNED_KICK_DISTANCE = 4.2;
 
     public static int maxMatchPerPlayer;
     public static boolean debugMode;
     public static boolean ballGlow;
     public static boolean ballRollEnabled;
     public static double ballRollSpeed;
-
+    private static volatile Location lobbySpawn;
     public static void generateBall(MatchData data, String id, Location location, Vector lastVelocity) {
         if (balls.get(id) != null) {
             throw new IllegalStateException("Same ID cannot be put on the same ball");
@@ -228,6 +231,7 @@ public class CubeBall extends JavaPlugin {
         ballGlow = getConfig().getBoolean("ball.glow", true);
         ballRollEnabled = getConfig().getBoolean("ball.roll.enabled", true);
         ballRollSpeed = getConfig().getDouble("ball.roll.speed", 1.0);
+        lobbySpawn = getConfig().getSerializable("lobbySpawn", Location.class);
 
         String lang = getConfig().getString("language", "en");
         I18n.init(this, lang);
@@ -243,17 +247,21 @@ public class CubeBall extends JavaPlugin {
         maxMatchPerPlayer = getConfig().getInt("maxMatchPerPlayer", 3);
 
         getServer().getPluginManager().registerEvents(new CubeBallListener(), this);
+        EmotecraftHook.init();
 
         new Metrics(this, 17634);
 
         launchRepeatingTask();
 
-        Objects.requireNonNull(getCommand("ccb")).setExecutor(new CCBCommand());
+        CCBCommand ccbCommand = new CCBCommand();
+        Objects.requireNonNull(getCommand("ccb")).setExecutor(ccbCommand);
+        Objects.requireNonNull(getCommand("ccb")).setTabCompleter(ccbCommand);
     }
 
     public void onDisable() {
         MenuManager.closeAll();
-
+        JoinSignManager.shutdown();
+        EmotecraftHook.shutdown();
         save();
 
         balls.forEach((key, value) -> {
@@ -318,6 +326,27 @@ public class CubeBall extends JavaPlugin {
             plugin.saveConfig();
             plugin.getLogger().info("Ball roll speed set to " + ballRollSpeed);
         }
+    }
+
+    public static Location getLobbySpawn() {
+        Location spawn = lobbySpawn;
+        return spawn == null ? null : spawn.clone();
+    }
+
+    public static void setLobbySpawn(Location location) {
+        lobbySpawn = location == null ? null : location.clone();
+        if (plugin != null) {
+            plugin.getConfig().set("lobbySpawn", lobbySpawn);
+            plugin.saveConfig();
+        }
+    }
+
+    public static boolean isPlaying(UUID playerId) {
+        if (playerId == null) return false;
+        for (Match match : matches.values()) {
+            if (match.isInProgress() && match.containsPlayer(playerId)) return true;
+        }
+        return false;
     }
 
     public static void debug(String message) {
@@ -429,7 +458,7 @@ public class CubeBall extends JavaPlugin {
         double directKickDistance = itemMode ? 1.75 : 1.0;
         double alignedKickDistance = itemMode ? 3.0 : 2.5;
 
-        ball.getNearbyEntities(3, 3, 3)
+        ball.getNearbyEntities(5, 5, 5)
                 .stream().filter(entity -> entity instanceof Player)
                 .forEach(p -> {
                     Player player = (Player) p;
@@ -438,9 +467,12 @@ public class CubeBall extends JavaPlugin {
                     Location playerLocation = player.getLocation();
                     Location ballLocation = ball.getLocation();
                     double distance = playerLocation.distance(ballLocation);
+                    boolean goalkeeper = isGoalkeeper(match, player);
+                    double directDistance = goalkeeper ? GOALKEEPER_DIRECT_KICK_DISTANCE : directKickDistance;
+                    double alignedDistance = goalkeeper ? GOALKEEPER_ALIGNED_KICK_DISTANCE : alignedKickDistance;
                     // if player is colliding the ball
-                    if (distance < directKickDistance || (
-                            distance < alignedKickDistance &&
+                    if (distance < directDistance || (
+                            distance < alignedDistance &&
                                     Math.floor(ballLocation.getX()) == Math.floor(playerLocation.getX()) &&
                                     Math.floor(ballLocation.getZ()) == Math.floor(playerLocation.getZ()))) {
 
@@ -510,7 +542,7 @@ public class CubeBall extends JavaPlugin {
         }
 
         if (match != null) {
-            match.checkGoal(ball.getLocation());
+            match.checkGoal(ball);
         }
 
         if (balls.get(id) != ballData) return;
@@ -523,6 +555,18 @@ public class CubeBall extends JavaPlugin {
         ballData.setPlayerCollisionTick(ballData.getPlayerCollisionTick() + 1);
         ballData.setWasOnGround(ball.isOnGround());
 
+    }
+
+    private static boolean isGoalkeeper(Match match, Player player) {
+        if (match == null || player == null) return false;
+        Location location = player.getLocation();
+        if (match.getBlueTeam().contains(player)) {
+            return match.getData().isNearBlueTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
+        }
+        if (match.getRedTeam().contains(player)) {
+            return match.getData().isNearRedTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
+        }
+        return false;
     }
 
     private static void tickDisplayRoll(Ball ballData) {
