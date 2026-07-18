@@ -179,8 +179,12 @@ public class CubeBallListener implements Listener {
 
     @EventHandler
     public static void onPlayerLeave(PlayerQuitEvent event) {
-        cooldown.remove(event.getPlayer().getUniqueId());
-        JoinSignManager.removeWaitingPlayer(event.getPlayer(), true);
+        Player player = event.getPlayer();
+        cooldown.remove(player.getUniqueId());
+        if (JoinSignManager.isWaiting(player)) {
+            JoinSignManager.removeWaitingPlayer(player, false);
+            reservePlayerExit(player);
+        }
     }
 
     @EventHandler

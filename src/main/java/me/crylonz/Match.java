@@ -1074,10 +1074,8 @@ public class Match {
     public boolean removeSpectator(Player player) {
         if (!isSpectator(player)) return false;
         spectatorTeam.remove(player);
-        runForPlayer(player, p -> {
-            disableSpectatorState(p);
-            PlayerStateCache.restore(p);
-        });
+        CubeBall.reservePlayerExit(player);
+        runForPlayer(player, CubeBall::restorePlayerAndExit);
         return true;
     }
 

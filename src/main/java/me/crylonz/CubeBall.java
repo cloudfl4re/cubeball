@@ -379,7 +379,11 @@ public class CubeBall extends JavaPlugin {
     }
 
     public static void reservePlayerExit(Player player) {
-        if (player != null) exitGenerations.putIfAbsent(player.getUniqueId(), 0);
+        if (player != null) reservePlayerExit(player.getUniqueId());
+    }
+
+    public static void reservePlayerExit(UUID playerId) {
+        if (playerId != null) exitGenerations.putIfAbsent(playerId, 0);
     }
 
     private static void teleportForExit(Player player, Location spawn, int retries, int exitToken) {

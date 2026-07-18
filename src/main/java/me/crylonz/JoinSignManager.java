@@ -73,7 +73,7 @@ public final class JoinSignManager {
         Player player = event.getPlayer();
         if (choice == Choice.LEAVE) {
             if (isWaiting(player)) {
-                removeWaitingPlayer(player, true);
+                leaveWaitingPlayer(player);
                 sendPlayerMessage(player, I18n.get("lobby_left"));
             } else {
                 Match match = getSpectatingMatch(player);
@@ -89,7 +89,7 @@ public final class JoinSignManager {
 
         Match match = CubeBall.matches.get(lobby.matchName);
         if (match == null || match.isInProgress()) {
-            removeWaitingPlayer(player, true);
+            leaveWaitingPlayer(player);
             sendPlayerMessage(player, I18n.get("lobby_match_unavailable"));
             return true;
         }
@@ -157,14 +157,21 @@ public final class JoinSignManager {
         }
     }
 
+    public static void leaveWaitingPlayer(Player player) {
+        if (!isWaiting(player)) return;
+        removeWaitingPlayer(player, false);
+        CubeBall.restorePlayerAndExit(player);
+    }
+
     public static void shutdown() {
         for (Lobby lobby : new ArrayList<>(lobbies.values())) {
             synchronized (lobby) {
                 cancelCountdown(lobby, false);
                 for (UUID uuid : new ArrayList<>(lobby.players.keySet())) {
+                    CubeBall.reservePlayerExit(uuid);
                     Player player = Bukkit.getPlayer(uuid);
                     if (player != null) {
-                        PlayerStateCache.restore(player);
+                        FoliaScheduler.runEntity(player, () -> CubeBall.restorePlayerAndExit(player));
                     }
                     playerLobby.remove(uuid, lobby.matchName);
                 }
@@ -186,6 +193,10 @@ public final class JoinSignManager {
             sendPlayerMessage(player, I18n.format("lobby_match_not_found_name", "match", matchName));
             return;
         }
+        if (CubeBall.isExiting(player.getUniqueId())) {
+            sendPlayerMessage(player, I18n.get("lobby_exit_pending"));
+            return;
+        }
         if (!match.isConfiguredForStart()) {
             sendPlayerMessage(player, I18n.format("lobby_match_not_configured", "match", match.getName()));
             return;
@@ -194,6 +205,8 @@ public final class JoinSignManager {
             if (!isPlayingAnotherMatch(player)) {
                 if (isWaiting(player)) removeWaitingPlayer(player, true);
                 PlayerStateCache.save(player);
+                Location lobbySpawn = CubeBall.getLobbySpawn();
+                if (lobbySpawn != null) player.teleportAsync(lobbySpawn);
                 match.addPlayerToTeam(player, Team.SPECTATOR);
                 PlayerStateCache.clear(player);
                 match.applyTeamKit(player, Team.SPECTATOR);
@@ -439,9 +452,10 @@ public final class JoinSignManager {
         synchronized (lobby) {
             sendLobbyMessage(lobby, message);
             for (UUID uuid : new ArrayList<>(lobby.players.keySet())) {
+                CubeBall.reservePlayerExit(uuid);
                 Player player = Bukkit.getPlayer(uuid);
                 if (player != null && player.isOnline()) {
-                    FoliaScheduler.runEntity(player, () -> PlayerStateCache.restore(player));
+                    FoliaScheduler.runEntity(player, () -> CubeBall.restorePlayerAndExit(player));
                 }
             }
             clearLobby(lobby, true);
