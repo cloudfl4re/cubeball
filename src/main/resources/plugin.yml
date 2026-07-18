@@ -9,10 +9,11 @@ softdepend:
   - CraftEngine
   - emotecraft
   - BodySize
+  - Residence
 commands:
   ccb:
     description: Control command
-    usage: /ccb [debug|glow|roll|setballhand|setballce|spawn|exitspawn|pause|resume|end|votepause]
+    usage: /ccb [debug|glow|roll|redteam|blueteam|setballhand|setballce|spawn|exitspawn|pause|resume|end|votepause]
 permissions:
   cubeball.manage:
     description: Allows player to manage cubeball

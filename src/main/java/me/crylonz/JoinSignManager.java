@@ -133,11 +133,15 @@ public final class JoinSignManager {
     }
 
     public static void removeWaitingPlayer(Player player, boolean restore) {
-        if (player == null) return;
+        removeWaitingPlayerInternal(player, restore);
+    }
+
+    private static boolean removeWaitingPlayerInternal(Player player, boolean restore) {
+        if (player == null) return false;
 
         UUID uuid = player.getUniqueId();
         String matchName = playerLobby.remove(uuid);
-        if (matchName == null) return;
+        if (matchName == null) return false;
 
         Lobby lobby = lobbies.get(matchName);
         if (lobby != null) {
@@ -155,12 +159,17 @@ public final class JoinSignManager {
         if (restore) {
             PlayerStateCache.restore(player);
         }
+        return true;
     }
 
     public static void leaveWaitingPlayer(Player player) {
-        if (!isWaiting(player)) return;
-        removeWaitingPlayer(player, false);
+        leaveWaitingPlayerIfPresent(player);
+    }
+
+    static boolean leaveWaitingPlayerIfPresent(Player player) {
+        if (!removeWaitingPlayerInternal(player, false)) return false;
         CubeBall.restorePlayerAndExit(player);
+        return true;
     }
 
     public static void shutdown() {

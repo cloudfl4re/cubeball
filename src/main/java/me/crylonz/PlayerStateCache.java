@@ -79,6 +79,7 @@ public final class PlayerStateCache {
         config.set("flying", player.isFlying());
         config.set("gameMode", player.getGameMode().name());
         config.set("invisible", player.isInvisible());
+        config.set("collidable", player.isCollidable());
         config.set("foodLevel", player.getFoodLevel());
         config.set("saturation", player.getSaturation());
         config.set("exhaustion", player.getExhaustion());
@@ -138,6 +139,7 @@ public final class PlayerStateCache {
         player.setAllowFlight(allowFlight);
         player.setFlying(config.getBoolean("flying", false) && allowFlight);
         player.setInvisible(config.getBoolean("invisible", false));
+        player.setCollidable(config.getBoolean("collidable", true));
         if (config.contains("foodLevel")) player.setFoodLevel(config.getInt("foodLevel"));
         if (config.contains("saturation")) player.setSaturation((float) config.getDouble("saturation"));
         if (config.contains("exhaustion")) player.setExhaustion((float) config.getDouble("exhaustion"));

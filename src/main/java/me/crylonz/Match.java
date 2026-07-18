@@ -169,6 +169,7 @@ public class Match {
                 startDelayedRound();
                 matchTimer = data.matchDuration;
                 matchState = IN_PROGRESS;
+                ResidenceBossBar.refreshAll();
 
                 sendPlayerMessage(p, I18n.get("match_starting"));
                 forEachPlayer(true, player -> {
@@ -478,6 +479,7 @@ public class Match {
         player.setAllowFlight(true);
         player.setFlying(true);
         player.setInvisible(true);
+        player.setCollidable(false);
         setMatchHunger(player);
     }
 
@@ -485,6 +487,7 @@ public class Match {
         player.setInvisible(false);
         player.setFlying(false);
         player.setAllowFlight(false);
+        player.setCollidable(true);
     }
 
     private void setMatchHunger(Player player) {
@@ -532,6 +535,7 @@ public class Match {
             triggerGoalAnimation(Team.RED);
         }
         if (lastTouchPlayer != null) goals.merge(lastTouchPlayer, 1, Integer::sum);
+        ResidenceBossBar.refreshAll();
 
         if (matchState == IN_PROGRESS && (data.maxGoal <= 0 || (blueScore != data.maxGoal && redScore != data.maxGoal))) {
             sendScoreToPlayer();
@@ -656,6 +660,7 @@ public class Match {
         redTimeoutUsed = false;
         roundCountdownActive = false;
         canceled = false;
+        ResidenceBossBar.refreshAll();
     }
 
     public synchronized void cancel() {

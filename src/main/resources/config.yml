@@ -3,6 +3,11 @@ maxMatchPerPlayer: 3
 debug: false
 lobbySpawn: null
 exitSpawn: null
+waitingLobby:
+  residence: zqc
+bossbar:
+  redteam: 红队
+  blueteam: 蓝队
 ball:
   glow: true
   roll:

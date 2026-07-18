@@ -20,11 +20,13 @@ import org.bukkit.event.inventory.InventoryDragEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
+import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
+import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerToggleFlightEvent;
 import org.bukkit.event.server.PluginEnableEvent;
 import org.bukkit.event.server.ServerCommandEvent;
@@ -126,6 +128,7 @@ public class CubeBallListener implements Listener {
             }
             if (PlayerStateCache.has(player) || isExiting(player.getUniqueId())) restorePlayerAndExit(player);
         }, 1L);
+        ResidenceBossBar.refreshLater(player);
     }
 
     @EventHandler
@@ -157,6 +160,54 @@ public class CubeBallListener implements Listener {
         }
     }
 
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public static void onWaitingLobbyMove(PlayerMoveEvent event) {
+        Player player = event.getPlayer();
+        String residenceName = leftWaitingLobbyResidence(player, event.getFrom(), event.getTo());
+        if (residenceName == null) return;
+        scheduleWaitingLobbyExit(player, residenceName);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public static void onResidenceBossBarMove(PlayerMoveEvent event) {
+        if (event.getTo() == null || sameBlock(event.getFrom(), event.getTo())) return;
+        ResidenceBossBar.refreshLater(event.getPlayer());
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public static void onWaitingLobbyTeleport(PlayerTeleportEvent event) {
+        Player player = event.getPlayer();
+        String residenceName = leftWaitingLobbyResidence(player, event.getFrom(), event.getTo());
+        if (residenceName == null) return;
+        scheduleWaitingLobbyExit(player, residenceName);
+    }
+
+    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
+    public static void onResidenceBossBarTeleport(PlayerTeleportEvent event) {
+        ResidenceBossBar.refreshLater(event.getPlayer());
+    }
+
+    private static void scheduleWaitingLobbyExit(Player player, String residenceName) {
+        FoliaScheduler.runEntityLater(player, () -> {
+            if (!JoinSignManager.isWaiting(player)) return;
+            if (ResidenceHook.getState(player.getLocation(), residenceName) != ResidenceHook.State.OUTSIDE) return;
+            if (JoinSignManager.leaveWaitingPlayerIfPresent(player)) {
+                player.sendMessage(com.github.squi2rel.cb.I18n.get("lobby_left_residence"));
+            }
+        }, 1L);
+    }
+
+    private static String leftWaitingLobbyResidence(Player player, Location from, Location to) {
+        if (!JoinSignManager.isWaiting(player)) return null;
+        if (to == null || sameBlock(from, to)) return null;
+
+        String residenceName = CubeBall.getWaitingLobbyResidence();
+        if (residenceName == null || residenceName.isBlank()) return null;
+        if (ResidenceHook.getState(from, residenceName) != ResidenceHook.State.INSIDE) return null;
+        if (ResidenceHook.getState(to, residenceName) != ResidenceHook.State.OUTSIDE) return null;
+        return residenceName;
+    }
+
     @EventHandler
     public static void onSwapItem(PlayerSwapHandItemsEvent event) {
         if (JoinSignManager.isSelectorItem(event.getMainHandItem()) || JoinSignManager.isSelectorItem(event.getOffHandItem())) {
@@ -180,6 +231,7 @@ public class CubeBallListener implements Listener {
     @EventHandler
     public static void onPlayerLeave(PlayerQuitEvent event) {
         Player player = event.getPlayer();
+        ResidenceBossBar.remove(player);
         cooldown.remove(player.getUniqueId());
         if (JoinSignManager.isWaiting(player)) {
             JoinSignManager.removeWaitingPlayer(player, false);
@@ -288,6 +340,14 @@ public class CubeBallListener implements Listener {
     @EventHandler
     public static void onPluginEnable(PluginEnableEvent event) {
         if (event.getPlugin().getName().equalsIgnoreCase("emotecraft")) EmotecraftHook.init();
+        if (event.getPlugin().getName().equalsIgnoreCase("Residence")) ResidenceHook.retry();
+    }
+
+    private static boolean sameBlock(Location first, Location second) {
+        return first.getWorld() == second.getWorld()
+                && first.getBlockX() == second.getBlockX()
+                && first.getBlockY() == second.getBlockY()
+                && first.getBlockZ() == second.getBlockZ();
     }
 
     private static boolean isBlockedBodySizeCommand(String command, Player sender) {

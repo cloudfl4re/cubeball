@@ -60,6 +60,25 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage("[CCB] Ball roll " + (enabled ? "enabled" : "disabled"));
             return true;
         }
+        if (args.length > 0 && (args[0].equalsIgnoreCase("redteam") || args[0].equalsIgnoreCase("blueteam"))) {
+            if (!sender.hasPermission("cubeball.admin")) {
+                sender.sendMessage("You do not have permission to do this!");
+                return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage("[CCB] Usage: /ccb " + args[0].toLowerCase() + " <name>");
+                return true;
+            }
+            String name = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
+            if (args[0].equalsIgnoreCase("redteam")) {
+                CubeBall.setBossBarRedTeam(name);
+                sender.sendMessage("[CCB] BossBar red team set to " + CubeBall.getBossBarRedTeam());
+            } else {
+                CubeBall.setBossBarBlueTeam(name);
+                sender.sendMessage("[CCB] BossBar blue team set to " + CubeBall.getBossBarBlueTeam());
+            }
+            return true;
+        }
         if (args.length > 0 && args[0].equalsIgnoreCase("setballhand")) {
             if (!(sender instanceof Player)) {
                 sender.sendMessage("[CCB] This command can only be used by a player.");
@@ -332,7 +351,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
                     && sender instanceof Player player
                     && (findActivePlayerMatch(player) != null || findPauseVoteMatch(player) != null)) values.add("votepause");
             if (sender.hasPermission("cubeball.admin")) {
-                values.addAll(List.of("debug", "glow", "roll", "setballhand", "setballce", "spawn", "exitspawn", "pause", "resume", "end"));
+                values.addAll(List.of("debug", "glow", "roll", "redteam", "blueteam", "setballhand", "setballce", "spawn", "exitspawn", "pause", "resume", "end"));
             }
             return filter(args[0], values);
         }

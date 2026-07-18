@@ -47,6 +47,7 @@ public class CubeBall extends JavaPlugin {
     private static final double GOALKEEPER_GOAL_RADIUS = 3.0;
     private static final double GOALKEEPER_DIRECT_KICK_DISTANCE = 3.0;
     private static final double GOALKEEPER_ALIGNED_KICK_DISTANCE = 4.2;
+    private static final double MAX_KICK_VERTICAL_REACH = 2.6;
 
     public static int maxMatchPerPlayer;
     public static boolean debugMode;
@@ -55,6 +56,11 @@ public class CubeBall extends JavaPlugin {
     public static double ballRollSpeed;
     private static volatile Location lobbySpawn;
     private static volatile Location exitSpawn;
+    private static volatile String waitingLobbyResidence = "zqc";
+    private static final String DEFAULT_BOSS_BAR_RED_TEAM = "\u7ea2\u961f";
+    private static final String DEFAULT_BOSS_BAR_BLUE_TEAM = "\u84dd\u961f";
+    private static volatile String bossBarRedTeam = DEFAULT_BOSS_BAR_RED_TEAM;
+    private static volatile String bossBarBlueTeam = DEFAULT_BOSS_BAR_BLUE_TEAM;
     public static void generateBall(MatchData data, String id, Location location, Vector lastVelocity) {
         if (balls.get(id) != null) {
             throw new IllegalStateException("Same ID cannot be put on the same ball");
@@ -235,6 +241,16 @@ public class CubeBall extends JavaPlugin {
         ballRollSpeed = getConfig().getDouble("ball.roll.speed", 1.0);
         lobbySpawn = getConfig().getSerializable("lobbySpawn", Location.class);
         exitSpawn = getConfig().getSerializable("exitSpawn", Location.class);
+        String residenceName = getConfig().getString("waitingLobby.residence", "zqc");
+        waitingLobbyResidence = residenceName == null ? "" : residenceName.trim();
+        bossBarRedTeam = normalizeBossBarTeamName(getConfig().getString("bossbar.redteam"), DEFAULT_BOSS_BAR_RED_TEAM);
+        bossBarBlueTeam = normalizeBossBarTeamName(getConfig().getString("bossbar.blueteam"), DEFAULT_BOSS_BAR_BLUE_TEAM);
+        if (!waitingLobbyResidence.isEmpty()) {
+            ResidenceHook.init();
+            if (!ResidenceHook.isAvailable()) {
+                getLogger().warning("Waiting lobby residence checks are disabled: " + ResidenceHook.getFailure());
+            }
+        }
 
         String lang = getConfig().getString("language", "en");
         I18n.init(this, lang);
@@ -268,6 +284,7 @@ public class CubeBall extends JavaPlugin {
     }
 
     public void onDisable() {
+        ResidenceBossBar.shutdown();
         MenuManager.closeAll();
         JoinSignManager.shutdown();
         EmotecraftHook.shutdown();
@@ -340,6 +357,42 @@ public class CubeBall extends JavaPlugin {
     public static Location getLobbySpawn() {
         Location spawn = lobbySpawn;
         return spawn == null ? null : spawn.clone();
+    }
+
+    public static String getWaitingLobbyResidence() {
+        return waitingLobbyResidence;
+    }
+
+    public static String getBossBarRedTeam() {
+        return bossBarRedTeam;
+    }
+
+    public static String getBossBarBlueTeam() {
+        return bossBarBlueTeam;
+    }
+
+    public static void setBossBarRedTeam(String name) {
+        bossBarRedTeam = normalizeBossBarTeamName(name, DEFAULT_BOSS_BAR_RED_TEAM);
+        saveBossBarTeam("bossbar.redteam", bossBarRedTeam);
+    }
+
+    public static void setBossBarBlueTeam(String name) {
+        bossBarBlueTeam = normalizeBossBarTeamName(name, DEFAULT_BOSS_BAR_BLUE_TEAM);
+        saveBossBarTeam("bossbar.blueteam", bossBarBlueTeam);
+    }
+
+    private static String normalizeBossBarTeamName(String name, String fallback) {
+        if (name == null) return fallback;
+        String value = name.trim();
+        return value.isEmpty() ? fallback : value;
+    }
+
+    private static void saveBossBarTeam(String path, String name) {
+        if (plugin != null) {
+            plugin.getConfig().set(path, name);
+            plugin.saveConfig();
+        }
+        ResidenceBossBar.refreshAll();
     }
 
     public static void setLobbySpawn(Location location) {
@@ -475,6 +528,8 @@ public class CubeBall extends JavaPlugin {
 
         FoliaScheduler.runGlobalTimer(() -> {
 
+            ResidenceBossBar.tick();
+
             cooldown.entrySet().removeIf(entry -> {
                 long targetTime = entry.getValue();
                 boolean b = System.currentTimeMillis() > targetTime;
@@ -530,45 +585,43 @@ public class CubeBall extends JavaPlugin {
         double directKickDistance = itemMode ? 1.75 : 1.0;
         double alignedKickDistance = itemMode ? 3.0 : 2.5;
 
-        ball.getNearbyEntities(5, 5, 5)
-                .stream().filter(entity -> entity instanceof Player)
-                .forEach(p -> {
-                    Player player = (Player) p;
-                    // 观战玩家不能踢球（containsPlayer 只含红/蓝两队）
-                    if (match != null && !match.containsPlayer(player)) return;
-                    Location playerLocation = player.getLocation();
-                    Location ballLocation = ball.getLocation();
-                    double distance = playerLocation.distance(ballLocation);
-                    boolean goalkeeper = isGoalkeeper(match, player);
-                    double directDistance = goalkeeper ? GOALKEEPER_DIRECT_KICK_DISTANCE : directKickDistance;
-                    double alignedDistance = goalkeeper ? GOALKEEPER_ALIGNED_KICK_DISTANCE : alignedKickDistance;
-                    // if player is colliding the ball
-                    if (distance < directDistance || (
-                            distance < alignedDistance &&
-                                    Math.floor(ballLocation.getX()) == Math.floor(playerLocation.getX()) &&
-                                    Math.floor(ballLocation.getZ()) == Math.floor(playerLocation.getZ()))) {
-
-                        // compute velocity to the ball
-                        Vector velocity = getVector(player, ballData);
-                        debug("kick id=" + id
-                                + " mode=" + (itemMode ? "item" : "block")
-                                + " player=" + player.getName()
-                                + " distance=" + String.format(Locale.ROOT, "%.2f", distance)
-                                + " velocity=" + formatVector(velocity)
-                                + " carrier=" + describeEntity(ball)
-                                + " display=" + describeEntity(ballData.getDisplay()));
-
-                        // apply ball trajectory
-                        ball.setVelocity(velocity);
-                        ball.setGravity(true);
-                        ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_STONE_HIT, 10, 1);
-                        ballData.setPlayerCollisionTick(0);
-
-                        if (match != null) {
-                            match.setLastTouchPlayer(ball, player);
-                        }
-                    }
-                });
+        Player kicker = null;
+        double nearestDistanceSquared = Double.MAX_VALUE;
+        Location ballLocation = ball.getLocation();
+        for (Entity entity : ball.getNearbyEntities(5, 5, 5)) {
+            if (!(entity instanceof Player player)) continue;
+            if (match != null && !match.containsPlayer(player)) continue;
+            Location playerLocation = player.getLocation();
+            if (ballLocation.getY() - playerLocation.getY() > MAX_KICK_VERTICAL_REACH) continue;
+            double distanceSquared = playerLocation.distanceSquared(ballLocation);
+            boolean goalkeeper = isGoalkeeper(match, player);
+            double directDistance = goalkeeper ? GOALKEEPER_DIRECT_KICK_DISTANCE : directKickDistance;
+            double alignedDistance = goalkeeper ? GOALKEEPER_ALIGNED_KICK_DISTANCE : alignedKickDistance;
+            boolean colliding = distanceSquared < directDistance * directDistance || (
+                    distanceSquared < alignedDistance * alignedDistance
+                            && Math.floor(ballLocation.getX()) == Math.floor(playerLocation.getX())
+                            && Math.floor(ballLocation.getZ()) == Math.floor(playerLocation.getZ()));
+            if (colliding && distanceSquared < nearestDistanceSquared) {
+                nearestDistanceSquared = distanceSquared;
+                kicker = player;
+            }
+        }
+        if (kicker != null) {
+            double distance = Math.sqrt(nearestDistanceSquared);
+            Vector velocity = getVector(kicker, ballData);
+            debug("kick id=" + id
+                    + " mode=" + (itemMode ? "item" : "block")
+                    + " player=" + kicker.getName()
+                    + " distance=" + String.format(Locale.ROOT, "%.2f", distance)
+                    + " velocity=" + formatVector(velocity)
+                    + " carrier=" + describeEntity(ball)
+                    + " display=" + describeEntity(ballData.getDisplay()));
+            ball.setVelocity(velocity);
+            ball.setGravity(true);
+            ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_STONE_HIT, 10, 1);
+            ballData.setPlayerCollisionTick(0);
+            if (match != null) match.setLastTouchPlayer(ball, kicker);
+        }
 
         if (ballData.getDisplay() != null && ball.isOnGround() && ballData.getPlayerCollisionTick() > 3) {
             Vector velocity = ball.getVelocity();
@@ -670,21 +723,34 @@ public class CubeBall extends JavaPlugin {
     private static Vector getVector(Player player, Ball ballData) {
         double yVelocity = 0.15;
         double xzMul = 1;
+        Vector direction = player.getLocation().getDirection();
+        double lookY = Math.max(0.0, Math.min(0.9, direction.getY()));
 
         if (player.isSneaking()) {
-            yVelocity = 0.3;
+            yVelocity = 0.3 + lookY * 0.8;
             xzMul = 3.5;
         } else if (player.isSprinting()) {
             yVelocity = 0.25;
         }
 
-        Vector velocity = ballData.getBall().getVelocity();
-        velocity.setY(ballData.getBall().getVelocity().getY() + yVelocity + player.getVelocity().getY() / 2);
-        velocity.setX(ballData.getBall().getVelocity().getX() + (player.getLocation().getDirection().getX() / 2) * xzMul);
-        velocity.setZ(ballData.getBall().getVelocity().getZ() + (player.getLocation().getDirection().getZ() / 2) * xzMul);
+        Vector horizontalDirection = direction.clone().setY(0);
+        if (player.isSneaking() && horizontalDirection.lengthSquared() > 0.0001) horizontalDirection.normalize();
+
+        Vector currentVelocity = ballData.getBall().getVelocity().clone();
+        Vector velocity = currentVelocity.clone();
+        if (player.isSneaking()) {
+            velocity.setY(yVelocity);
+            velocity.setX((horizontalDirection.getX() / 2) * xzMul);
+            velocity.setZ((horizontalDirection.getZ() / 2) * xzMul);
+        } else {
+            velocity.setY(currentVelocity.getY() + yVelocity + player.getVelocity().getY() / 2);
+            velocity.setX(currentVelocity.getX() + (horizontalDirection.getX() / 2) * xzMul);
+            velocity.setZ(currentVelocity.getZ() + (horizontalDirection.getZ() / 2) * xzMul);
+        }
 
         // if player is not moving, create bouncing on it
-        if (abs(player.getVelocity().getX() + player.getVelocity().getY() + player.getVelocity().getZ()) == 0) {
+        if (!player.isSneaking()
+                && player.getVelocity().lengthSquared() < 0.000001) {
             velocity.setY(0);
             velocity.setX(0);
             velocity.setZ(0);
