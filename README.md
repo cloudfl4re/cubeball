@@ -7,7 +7,7 @@ cubeball 是一个 Minecraft 足球插件，玩家可以用方块足球进行比
 - 依赖更新为 Paper API `1.21.11-R0.1-SNAPSHOT`
 - `plugin.yml` 添加 `folia-supported: true`
 - 调度逻辑改为 Folia/Paper 的 Global、Region、Entity Scheduler
-- 权限节点包括 `cubeball.manage`、`cubeball.admin` 和默认开启的 `cubeball.timeout`
+- 权限节点包括 `cubeball.manage`、`cubeball.admin`、默认开启的 `cubeball.timeout` 和 OP 默认拥有的 `cubeball.commandbypass`
 - 构建目标更新为 Java 21
 
 ## 环境要求
@@ -51,6 +51,8 @@ target/cubeball-1.0.0.jar
 
 比赛进行中通过告示牌加入时会自动传送到等待大厅并作为观众加入；明确退出等待大厅或观众席会传送到 `exitSpawn`。等待大厅倒计时失败时，在线玩家也会自动传出。
 
+拥有 `cubeball.commandbypass` 权限的玩家可以绕过参赛期间和等待大厅期间的命令拦截，但该权限不会授予被执行命令本身所需的权限，也不会解除比赛期间的 BodySize 保护。
+
 参赛者每队每场比赛只有一次成功的暂停额度。使用 `/ccb votepause 5` 或 `/ccb votepause 10` 发起投票，投票通过后立即结束当前回合且不计分，并暂停对应时长；暂停到期后自动进行 3 秒倒计时继续。暂停期间管理员可以使用 `/ccb pause` 接管为无限期技术暂停，但该队已使用的暂停额度不会恢复。投票失败或超时不会消耗额度。
 
 ## 权限
@@ -60,6 +62,7 @@ target/cubeball-1.0.0.jar
 | `cubeball.manage` | OP | 允许打开管理菜单 |
 | `cubeball.admin` | OP | 允许管理所有比赛和高级设置 |
 | `cubeball.timeout` | true | 允许参赛者发起和参与暂停投票 |
+| `cubeball.commandbypass` | OP | 允许绕过比赛和等待大厅期间的命令限制 |
 
 ## 许可证
 

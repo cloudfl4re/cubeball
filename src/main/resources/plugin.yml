@@ -25,3 +25,6 @@ permissions:
   cubeball.timeout:
     description: Allows players to vote for a team timeout
     default: true
+  cubeball.commandbypass:
+    description: Allows players to bypass match and lobby command restrictions
+    default: op

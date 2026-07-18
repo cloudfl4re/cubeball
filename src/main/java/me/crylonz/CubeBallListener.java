@@ -243,18 +243,19 @@ public class CubeBallListener implements Listener {
     @EventHandler
     public static void onCommand(PlayerCommandPreprocessEvent event) {
         Player player = event.getPlayer();
-        if (CubeBall.isPlaying(player.getUniqueId())) {
-            if (isAllowedPlayingCommand(event.getMessage(), player)) return;
-            event.setCancelled(true);
-            player.sendMessage(com.github.squi2rel.cb.I18n.get("match_commands_blocked"));
-            return;
-        }
+        boolean commandBypass = player.hasPermission("cubeball.commandbypass");
         if (isBlockedBodySizeCommand(event.getMessage(), player)) {
             event.setCancelled(true);
             player.sendMessage(com.github.squi2rel.cb.I18n.get("match_bodysize_blocked"));
             return;
         }
-        if (player.hasPermission("cubeball.admin")) return;
+        if (CubeBall.isPlaying(player.getUniqueId())) {
+            if (commandBypass || isAllowedPlayingCommand(event.getMessage(), player)) return;
+            event.setCancelled(true);
+            player.sendMessage(com.github.squi2rel.cb.I18n.get("match_commands_blocked"));
+            return;
+        }
+        if (commandBypass || player.hasPermission("cubeball.admin")) return;
         String label = event.getMessage().trim().toLowerCase(Locale.ROOT);
         if (JoinSignManager.isWaiting(player)) {
             if (label.equals("/ccb") || label.startsWith("/ccb ")) return;
