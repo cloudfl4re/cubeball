@@ -1,6 +1,10 @@
 package me.crylonz;
 
 import org.bukkit.GameMode;
+import org.bukkit.NamespacedKey;
+import org.bukkit.Registry;
+import org.bukkit.attribute.Attribute;
+import org.bukkit.attribute.AttributeInstance;
 import org.bukkit.configuration.file.YamlConfiguration;
 import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
@@ -74,6 +78,13 @@ public final class PlayerStateCache {
         config.set("allowFlight", player.getAllowFlight());
         config.set("flying", player.isFlying());
         config.set("gameMode", player.getGameMode().name());
+        config.set("invisible", player.isInvisible());
+        config.set("foodLevel", player.getFoodLevel());
+        config.set("saturation", player.getSaturation());
+        config.set("exhaustion", player.getExhaustion());
+        Attribute scaleAttribute = Registry.ATTRIBUTE.get(NamespacedKey.minecraft("scale"));
+        AttributeInstance scale = scaleAttribute == null ? null : player.getAttribute(scaleAttribute);
+        if (scale != null) config.set("scale", scale.getBaseValue());
 
         try {
             config.save(file);
@@ -126,6 +137,15 @@ public final class PlayerStateCache {
         boolean allowFlight = config.getBoolean("allowFlight", false);
         player.setAllowFlight(allowFlight);
         player.setFlying(config.getBoolean("flying", false) && allowFlight);
+        player.setInvisible(config.getBoolean("invisible", false));
+        if (config.contains("foodLevel")) player.setFoodLevel(config.getInt("foodLevel"));
+        if (config.contains("saturation")) player.setSaturation((float) config.getDouble("saturation"));
+        if (config.contains("exhaustion")) player.setExhaustion((float) config.getDouble("exhaustion"));
+        if (config.contains("scale")) {
+            Attribute scaleAttribute = Registry.ATTRIBUTE.get(NamespacedKey.minecraft("scale"));
+            AttributeInstance scale = scaleAttribute == null ? null : player.getAttribute(scaleAttribute);
+            if (scale != null) scale.setBaseValue(config.getDouble("scale"));
+        }
 
         player.updateInventory();
 

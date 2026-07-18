@@ -4,11 +4,6 @@ import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.util.FoliaScheduler;
 import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
-import net.md_5.bungee.api.ChatMessageType;
-import net.md_5.bungee.api.chat.ClickEvent;
-import net.md_5.bungee.api.chat.ComponentBuilder;
-import net.md_5.bungee.api.chat.HoverEvent;
-import net.md_5.bungee.api.chat.TextComponent;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.attribute.Attribute;
@@ -43,28 +38,22 @@ public class Match {
     private final Map<UUID, Double> originalScales = new ConcurrentHashMap<>();
     private volatile MatchState matchState;
     private volatile UUID lastTouchPlayer;
-    private volatile UUID lastGoalPlayer;
-    private volatile Team lastGoalTeam;
-    private volatile boolean lastGoalVoidable;
     private volatile int blueScore = 0;
     private volatile int redScore = 0;
     private volatile boolean canceled;
-    private volatile boolean pendingTechnicalPause;
-    private volatile boolean technicalPauseActive;
     private volatile boolean roundCountdownActive;
-    private volatile boolean unpauseVoteActive;
-    private volatile UUID unpauseVoteStarter;
-    private final Set<UUID> unpauseAgreeVotes = ConcurrentHashMap.newKeySet();
-    private final Set<UUID> unpauseDenyVotes = ConcurrentHashMap.newKeySet();
-    private volatile int blueTechnicalPauses;
-    private volatile int redTechnicalPauses;
-    private volatile int blueRsRequests;
-    private volatile int redRsRequests;
-    private volatile RsRequest pendingRsRequest;
-    private volatile int rsRequestSequence;
-    private final Set<UUID> rsSuspendedPlayers = ConcurrentHashMap.newKeySet();
     private final AtomicInteger roundGeneration = new AtomicInteger();
+    private final AtomicInteger scanGeneration = new AtomicInteger();
     private final Set<ScheduledTask> roundTasks = ConcurrentHashMap.newKeySet();
+    private final AtomicInteger pauseGeneration = new AtomicInteger();
+    private final AtomicInteger voteGeneration = new AtomicInteger();
+    private volatile PauseType pauseType = PauseType.NONE;
+    private volatile ScheduledTask pauseExpiryTask;
+    private volatile ScheduledTask pauseVoteTask;
+    private volatile PauseVote pauseVote;
+    private volatile Team pauseTeam;
+    private volatile boolean blueTimeoutUsed;
+    private volatile boolean redTimeoutUsed;
     private final MatchData data;
 
     public Match(String name, Player player) {
@@ -76,10 +65,24 @@ public class Match {
         matchState = CREATED;
     }
 
-    public void scanPlayer() {
+    public synchronized void scanPlayer() {
+        if (isInProgress()) return;
+        int scanToken = scanGeneration.incrementAndGet();
+        canceled = false;
+        matchState = CREATED;
+        List<Player> previousPlayers = getAllPlayer(true);
         blueTeam.clear();
         redTeam.clear();
         spectatorTeam.clear();
+        for (Player previous : previousPlayers) {
+            runForPlayer(previous, player -> {
+                if (hasPlayer(player) || isPlayerInOtherActiveMatch(player.getUniqueId())) return;
+                PotionEffect effect = player.getPotionEffect(PotionEffectType.SLOWNESS);
+                if (effect != null && effect.getAmplifier() >= 255) player.removePotionEffect(PotionEffectType.SLOWNESS);
+                disableSpectatorState(player);
+                PlayerStateCache.restore(player);
+            });
+        }
 
         List<Location> blueSpawns = new ArrayList<>(data.blueTeamSpawns);
         List<Location> redSpawns = new ArrayList<>(data.redTeamSpawns);
@@ -92,61 +95,74 @@ public class Match {
 
         AtomicInteger remaining = new AtomicInteger(taskCount);
         for (Location spawn : blueSpawns) {
-            scanNearPlayers(spawn, Team.BLUE, remaining);
+            scanNearPlayers(spawn, Team.BLUE, remaining, scanToken);
         }
         for (Location spawn : redSpawns) {
-            scanNearPlayers(spawn, Team.RED, remaining);
+            scanNearPlayers(spawn, Team.RED, remaining, scanToken);
         }
 
         World world = data.ballSpawn.getWorld();
         for (Player player : onlinePlayers) {
             FoliaScheduler.runEntity(player, () -> {
                 try {
-                    if (player.getWorld() != world) return;
-                    boolean nearGoal = data.isNearAnyGoal(player.getLocation(), 100.0);
-                    boolean nearField = player.getLocation().distance(data.ballSpawn) < 256 || nearGoal;
-                    if (nearField) {
-                        if (!blueTeam.contains(player) && !redTeam.contains(player) && !spectatorTeam.contains(player)) {
+                    synchronized (Match.this) {
+                        if (scanGeneration.get() != scanToken || matchState != CREATED || canceled) return;
+                        if (player.getWorld() != world) return;
+                        boolean nearGoal = data.isNearAnyGoal(player.getLocation(), 100.0);
+                        boolean nearField = player.getLocation().distance(data.ballSpawn) < 256 || nearGoal;
+                        if (nearField && !isExiting(player.getUniqueId()) && !isPlayerInOtherActiveMatch(player.getUniqueId())
+                                && !blueTeam.contains(player) && !redTeam.contains(player) && !spectatorTeam.contains(player)) {
                             addPlayerToTeam(player, Team.SPECTATOR);
                             if (nearGoal) sendPlayerMessage(player, I18n.get("spectator_auto_join"));
                         }
                     }
                 } finally {
-                    finishScan(remaining);
+                    finishScan(remaining, scanToken);
                 }
-            }, () -> finishScan(remaining));
+            }, () -> finishScan(remaining, scanToken));
         }
     }
 
-    private void scanNearPlayers(Location spawn, Team team, AtomicInteger remaining) {
+    private void scanNearPlayers(Location spawn, Team team, AtomicInteger remaining, int scanToken) {
         if (spawn == null) {
-            finishScan(remaining);
+            finishScan(remaining, scanToken);
             return;
         }
         FoliaScheduler.runRegion(spawn, () -> {
             try {
-                World world = Objects.requireNonNull(spawn.getWorld());
-                for (Entity entity : world.getNearbyEntities(spawn, 1, 1, 1)) {
-                    if (entity instanceof Player) {
-                        Player player = (Player) entity;
-                        if (player.getVehicle() == null) addPlayerToTeam(player, team);
+                synchronized (Match.this) {
+                    if (scanGeneration.get() != scanToken || matchState != CREATED || canceled) return;
+                    World world = Objects.requireNonNull(spawn.getWorld());
+                    for (Entity entity : world.getNearbyEntities(spawn, 1, 1, 1)) {
+                        if (entity instanceof Player) {
+                            Player player = (Player) entity;
+                            if (player.getVehicle() == null && !isExiting(player.getUniqueId())
+                                    && !isPlayerInOtherActiveMatch(player.getUniqueId())) addPlayerToTeam(player, team);
+                        }
                     }
                 }
             } finally {
-                finishScan(remaining);
+                finishScan(remaining, scanToken);
             }
         });
     }
 
-    private void finishScan(AtomicInteger remaining) {
-        if (remaining.decrementAndGet() == 0) {
+    private synchronized void finishScan(AtomicInteger remaining, int scanToken) {
+        if (remaining.decrementAndGet() == 0 && scanGeneration.get() == scanToken && matchState == CREATED && !canceled) {
             matchState = READY;
         }
     }
 
-    public void start(Player p) {
+    public synchronized void start(Player p) {
         if (matchState == READY) {
+            if (getAllPlayer(true).stream().anyMatch(player -> player != null && isExiting(player.getUniqueId()))) {
+                sendPlayerMessage(p, I18n.get("match_not_ready"));
+                return;
+            }
             reset();
+            blueTeam.removeIf(player -> player == null || isPlayerInOtherActiveMatch(player.getUniqueId()));
+            redTeam.removeIf(player -> player == null || isPlayerInOtherActiveMatch(player.getUniqueId()));
+            spectatorTeam.removeIf(player -> player == null || isPlayerInOtherActiveMatch(player.getUniqueId()));
             if (!blueTeam.isEmpty() || !redTeam.isEmpty()) {
                 sortSpawns();
 
@@ -220,15 +236,15 @@ public class Match {
         return loc;
     }
 
-    private void startDelayedRound() {
-        startDelayedRound(80L);
+    private synchronized void startDelayedRound() {
+        startDelayedRound(80L, false);
     }
 
-    private void startDelayedRound(long goDelayTicks) {
-        if (pendingTechnicalPause) {
-            startTechnicalPause();
-            return;
-        }
+    private synchronized void startDelayedRound(long goDelayTicks) {
+        startDelayedRound(goDelayTicks, false);
+    }
+
+    private synchronized void startDelayedRound(long goDelayTicks, boolean resumeCountdown) {
         int roundToken = beginRoundSequence();
         roundCountdownActive = true;
         teleportTeam(blueTeam, data.blueTeamSpawns);
@@ -238,16 +254,22 @@ public class Match {
         List<Location> allSpawns = getAllSpawns();
         for (Location spawn : allSpawns) setSurrounding(spawn, Material.BARRIER);
         forEachPlayer(false, player -> {
-            normalizePlayerForMatch(player);
             if (!PlayerStateCache.has(player)) PlayerStateCache.save(player);
+            normalizePlayerForMatch(player);
             PlayerStateCache.clear(player);
             applyTeamKit(player, getPlayingTeam(player));
+            player.setInvisible(false);
             player.setAllowFlight(false);
             player.setFlying(false);
+            setMatchHunger(player);
             player.setVelocity(new Vector(0, 0, 0));
             player.addPotionEffect(effect);
         });
-        if (goDelayTicks > 80L) {
+        if (resumeCountdown) {
+            sendMessageToAllPlayer(I18n.format("pause_resume_countdown", "seconds", 3), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1);
+            scheduleRoundTask(roundToken, () -> sendMessageToAllPlayer(I18n.format("pause_resume_countdown", "seconds", 2), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 20);
+            scheduleRoundTask(roundToken, () -> sendMessageToAllPlayer(I18n.format("pause_resume_countdown", "seconds", 1), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1), 40);
+        } else if (goDelayTicks > 80L) {
             for (long ticksLeft = goDelayTicks; ticksLeft > 0L; ticksLeft -= 20L) {
                 long delay = goDelayTicks - ticksLeft;
                 int secondsLeft = (int) (ticksLeft / 20L);
@@ -273,12 +295,10 @@ public class Match {
         return allSpawns;
     }
 
-    private void startRound(int roundToken) {
+    private synchronized void startRound(int roundToken) {
         if (!isRoundActive(roundToken)) return;
         roundCountdownActive = false;
-        lastGoalVoidable = false;
-        lastGoalTeam = null;
-        lastGoalPlayer = null;
+        lastTouchPlayer = null;
         matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
         removeBall();
         generateBall(data, name, data.ballSpawn, null);
@@ -289,40 +309,16 @@ public class Match {
         return roundGeneration.incrementAndGet();
     }
 
-    private void scheduleGoalRestart() {
+    private synchronized void scheduleGoalRestart() {
         cancelRoundTasks(false);
         int roundToken = roundGeneration.incrementAndGet();
         ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
-            if (roundGeneration.get() != roundToken || canceled || matchState != GOAL) return;
-            startDelayedRound();
+            synchronized (Match.this) {
+                if (roundGeneration.get() != roundToken || canceled || matchState != GOAL) return;
+                startDelayedRound();
+            }
         }, 20 * 3);
         roundTasks.add(task);
-    }
-
-    private void startTechnicalPause() {
-        pendingTechnicalPause = false;
-        technicalPauseActive = true;
-        clearUnpauseVote();
-        invalidateRoundSequence();
-        matchState = PAUSED;
-        sendTextToAllPlayer("[CCB] 技术暂停开始，60秒后自动继续。");
-        scheduleTechnicalPauseActionBar();
-        ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
-            if (!technicalPauseActive || canceled || matchState != PAUSED || pendingRsRequest != null) return;
-            resumeFromTechnicalPause("[CCB] 技术暂停结束，准备开球。");
-        }, 20 * 60);
-        roundTasks.add(task);
-    }
-
-    private void scheduleTechnicalPauseActionBar() {
-        for (int elapsed = 0; elapsed < 60; elapsed++) {
-            int secondsLeft = 60 - elapsed;
-            ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
-                if (!technicalPauseActive || canceled || matchState != PAUSED || pendingRsRequest != null) return;
-                sendActionBarToAllPlayer("技术暂停剩余 " + secondsLeft + " 秒");
-            }, elapsed * 20L + 1L);
-            roundTasks.add(task);
-        }
     }
 
     private void scheduleRoundTask(int roundToken, Runnable runnable, long delayTicks) {
@@ -369,12 +365,37 @@ public class Match {
     }
 
     public void replacePlayer(Player player) {
-        replacePlayer(blueTeam, player);
-        replacePlayer(redTeam, player);
-        replacePlayer(spectatorTeam, player);
+        boolean participant = replacePlayer(blueTeam, player);
+        participant = replacePlayer(redTeam, player) || participant;
+        if (participant && isInProgress()) refreshParticipantState(player);
+        if (replacePlayer(spectatorTeam, player) && isInProgress()) {
+            refreshSpectatorState(player);
+        }
     }
 
-    private static void replacePlayer(Set<Player> players, Player newPlayer) {
+    private void refreshParticipantState(Player player) {
+        runForPlayer(player, target -> {
+            if (!isInProgress() || !containsPlayer(target)) return;
+            if (!PlayerStateCache.has(target)) PlayerStateCache.save(target);
+            normalizePlayerForMatch(target);
+            PlayerStateCache.clear(target);
+            applyTeamKit(target, getPlayingTeam(target));
+            target.setInvisible(false);
+            target.setAllowFlight(false);
+            target.setFlying(false);
+            setMatchHunger(target);
+        });
+    }
+
+    public void refreshSpectatorState(Player player) {
+        if (isInProgress() && isSpectator(player)) {
+            runForPlayer(player, target -> {
+                if (isInProgress() && isSpectator(target)) enableSpectatorState(target);
+            });
+        }
+    }
+
+    private static boolean replacePlayer(Set<Player> players, Player newPlayer) {
         UUID uuid = newPlayer.getUniqueId();
         Player oldPlayer = null;
 
@@ -388,32 +409,27 @@ public class Match {
         if (oldPlayer != null) {
             players.remove(oldPlayer);
             players.add(newPlayer);
+            return true;
         }
+        return false;
     }
 
 
     public void addPlayerToTeam(Player p, Team team) {
         if (p != null) {
-            if (team != Team.SPECTATOR && rsSuspendedPlayers.contains(p.getUniqueId())) {
-                spectatorTeam.add(p);
-                blueTeam.remove(p);
-                redTeam.remove(p);
-                sendPlayerMessage(p, "[CCB] 滥用rs，下一次有人进球后才能继续参赛。");
-                return;
-            }
             if (team.equals(Team.BLUE)) {
                 blueTeam.add(p);
                 redTeam.remove(p);
-                spectatorTeam.remove(p);
+                if (spectatorTeam.remove(p)) runForPlayer(p, this::disableSpectatorState);
             } else if (team.equals(Team.RED)) {
                 redTeam.add(p);
                 blueTeam.remove(p);
-                spectatorTeam.remove(p);
+                if (spectatorTeam.remove(p)) runForPlayer(p, this::disableSpectatorState);
             } else {
                 spectatorTeam.add(p);
                 blueTeam.remove(p);
                 redTeam.remove(p);
-                enableSpectatorFlight(p);
+                runForPlayer(p, this::enableSpectatorState);
             }
             sendPlayerMessage(p, I18n.format("your_team", "team", I18n.get(team == Team.BLUE ? "blue_name" : team == Team.SPECTATOR ? "spectator_name" : "red_name")));
         }
@@ -439,8 +455,8 @@ public class Match {
         spectatorTeam.removeAll(blueTeam);
         for (Player spectator : spectatorTeam) {
             runForPlayer(spectator, player -> {
+                enableSpectatorState(player);
                 PlayerStateCache.clear(player);
-                enableSpectatorFlight(player);
                 JoinSignManager.giveActiveSpectatorItem(player);
             });
         }
@@ -457,13 +473,27 @@ public class Match {
         }
     }
 
-    private void enableSpectatorFlight(Player player) {
+    private void enableSpectatorState(Player player) {
         if (!PlayerStateCache.has(player)) PlayerStateCache.save(player);
         player.setAllowFlight(true);
         player.setFlying(true);
+        player.setInvisible(true);
+        setMatchHunger(player);
     }
 
-    public void checkGoal(Location ballLocation) {
+    private void disableSpectatorState(Player player) {
+        player.setInvisible(false);
+        player.setFlying(false);
+        player.setAllowFlight(false);
+    }
+
+    private void setMatchHunger(Player player) {
+        player.setFoodLevel(20);
+        player.setSaturation(20.0f);
+        player.setExhaustion(0.0f);
+    }
+
+    public synchronized void checkGoal(Location ballLocation) {
         if (matchState == IN_PROGRESS || matchState == OVERTIME) {
             if (data.isInBlueTeamGoal(ballLocation)) {
                 goal(Team.RED);
@@ -476,8 +506,10 @@ public class Match {
         }
     }
 
-    public void checkGoal(Entity ball) {
+    public synchronized void checkGoal(Entity ball) {
         if (ball == null) return;
+        Ball currentBall = balls.get(name);
+        if (currentBall == null || currentBall.getBall() != ball) return;
         if (matchState == IN_PROGRESS || matchState == OVERTIME) {
             if (data.intersectsBlueTeamGoal(ball.getWorld(), ball.getBoundingBox()) || data.isInBlueTeamGoal(ball.getLocation())) {
                 goal(Team.RED);
@@ -490,11 +522,7 @@ public class Match {
         }
     }
 
-    private void goal(Team team) {
-        rsSuspendedPlayers.clear();
-        lastGoalTeam = team;
-        lastGoalPlayer = lastTouchPlayer;
-        lastGoalVoidable = true;
+    private synchronized void goal(Team team) {
         if (Team.BLUE.equals(team)) {
             blueScore++;
             triggerGoalAnimation(Team.BLUE);
@@ -503,6 +531,7 @@ public class Match {
             redScore++;
             triggerGoalAnimation(Team.RED);
         }
+        if (lastTouchPlayer != null) goals.merge(lastTouchPlayer, 1, Integer::sum);
 
         if (matchState == IN_PROGRESS && (data.maxGoal <= 0 || (blueScore != data.maxGoal && redScore != data.maxGoal))) {
             sendScoreToPlayer();
@@ -516,11 +545,17 @@ public class Match {
     }
 
     public void spawnFirework(Team team) {
-        for (int i = 0; i < 3; i++) {
-            int offset = i * 30;
-            FoliaScheduler.runGlobalLater(() -> spawnFireworkFor(team), offset + 5);
-            FoliaScheduler.runGlobalLater(() -> spawnFireworkFor(team), offset + 10);
-            FoliaScheduler.runGlobalLater(() -> spawnFireworkFor(team), offset + 15);
+        Set<Player> players = team == Team.BLUE ? blueTeam : redTeam;
+        for (Player player : players) {
+            runForPlayer(player, target -> {
+                Location location = target.getLocation().clone();
+                for (int i = 0; i < 3; i++) {
+                    int offset = i * 30;
+                    scheduleFirework(location, offset + 5);
+                    scheduleFirework(location, offset + 10);
+                    scheduleFirework(location, offset + 15);
+                }
+            });
         }
     }
 
@@ -531,28 +566,59 @@ public class Match {
         }
     }
 
-    public void endMatch() {
-        invalidateRoundSequence();
-        String title;
-        if (getBlueScore() > getRedScore()) {
-            title = I18n.get("blue_win");
-            spawnFirework(Team.BLUE);
-        } else if (getBlueScore() < getRedScore()) {
-            title = I18n.get("red_win");
-            spawnFirework(Team.RED);
-        } else {
-            title = I18n.get("overtime");
-            setMatchState(OVERTIME);
-        }
+    private void scheduleFirework(Location location, long delayTicks) {
+        FoliaScheduler.runRegionLater(location, () -> {
+            World world = location.getWorld();
+            if (world != null) world.spawnEntity(location.clone(), EntityType.FIREWORK_ROCKET);
+        }, delayTicks);
+    }
 
+    public synchronized void endMatch() {
+        if (!isPlayableForPause()) return;
+        boolean restartOvertimeRound = roundCountdownActive || matchState == GOAL || !balls.containsKey(name);
+        invalidateRoundSequence();
+        if (getBlueScore() > getRedScore()) {
+            finishMatch(I18n.get("blue_win"), Team.BLUE);
+        } else if (getBlueScore() < getRedScore()) {
+            finishMatch(I18n.get("red_win"), Team.RED);
+        } else {
+            String score = ChatColor.BLUE.toString() + getBlueScore() + ChatColor.WHITE + " - " + ChatColor.RED + getRedScore();
+            setMatchState(OVERTIME);
+            sendMessageToAllPlayer(I18n.get("overtime"), score, 3, Sound.ENTITY_RABBIT_DEATH, 0.5f);
+            if (restartOvertimeRound) startDelayedRound();
+        }
+    }
+
+    public synchronized String forceEndMatch() {
+        if (!isInProgress()) return I18n.get("force_end_not_active");
+        invalidateRoundSequence();
+        Team winner = null;
+        String title;
+        if (blueScore > redScore) {
+            winner = Team.BLUE;
+            title = I18n.format("force_end_blue_win", "blue", blueScore, "red", redScore);
+        } else if (redScore > blueScore) {
+            winner = Team.RED;
+            title = I18n.format("force_end_red_win", "blue", blueScore, "red", redScore);
+        } else {
+            title = I18n.format("force_end_draw", "blue", blueScore, "red", redScore);
+        }
+        finishMatch(title, winner);
+        return I18n.get("force_end_success");
+    }
+
+    private void finishMatch(String title, Team winner) {
+        clearPauseState();
+        if (winner != null) spawnFirework(winner);
         String score = ChatColor.BLUE.toString() + getBlueScore() + ChatColor.WHITE + " - " + ChatColor.RED + getRedScore();
         sendMessageToAllPlayer(title, score, 3, Sound.ENTITY_RABBIT_DEATH, 0.5f);
         ArrayList<Map.Entry<UUID, Integer>> list = new ArrayList<>(goals.entrySet());
         list.sort((e1, e2) -> Integer.compare(e2.getValue(), e1.getValue()));
+        int totalGoals = redScore + blueScore;
         forEachPlayer(true, player -> {
             player.sendMessage(I18n.get("game_over"));
             player.sendMessage(I18n.get("goal_rank"));
-            player.sendMessage(I18n.format("total_goals", "total", redScore + blueScore));
+            player.sendMessage(I18n.format("total_goals", "total", totalGoals));
             int i = 0;
             for (Map.Entry<UUID, Integer> entry : list) {
                 player.sendMessage(I18n.format("player_goal",
@@ -566,7 +632,7 @@ public class Match {
 
         removeBall();
         restorePlayerScales();
-        forEachPlayer(true, PlayerStateCache::restore);
+        restoreAndExitPlayers();
         reset();
     }
 
@@ -577,46 +643,46 @@ public class Match {
         return name != null ? name : uuid.toString();
     }
 
-    public void reset() {
+    public synchronized void reset() {
         invalidateRoundSequence();
+        scanGeneration.incrementAndGet();
+        clearPauseState();
         setMatchState(READY);
         blueScore = 0;
         redScore = 0;
+        lastTouchPlayer = null;
         goals.clear();
-        blueTechnicalPauses = 0;
-        redTechnicalPauses = 0;
-        blueRsRequests = 0;
-        redRsRequests = 0;
-        pendingTechnicalPause = false;
-        technicalPauseActive = false;
+        blueTimeoutUsed = false;
+        redTimeoutUsed = false;
         roundCountdownActive = false;
-        clearUnpauseVote();
-        pendingRsRequest = null;
-        lastGoalTeam = null;
-        lastGoalPlayer = null;
-        lastGoalVoidable = false;
-        rsSuspendedPlayers.clear();
         canceled = false;
     }
 
-    public void cancel() {
+    public synchronized void cancel() {
         invalidateRoundSequence();
+        clearPauseState();
         removeBall();
         restorePlayerScales();
+        restoreAndExitPlayers();
         reset();
         canceled = true;
         forEachPlayer(true, p -> {
-            PlayerStateCache.restore(p);
             p.sendMessage(I18n.get("match_canceled"));
+        });
+    }
+
+    private void restoreAndExitPlayers() {
+        for (Player player : getAllPlayer(true)) CubeBall.reservePlayerExit(player);
+        forEachPlayer(true, player -> {
+            PotionEffect effect = player.getPotionEffect(PotionEffectType.SLOWNESS);
+            if (effect != null && effect.getAmplifier() >= 255) player.removePotionEffect(PotionEffectType.SLOWNESS);
+            CubeBall.restorePlayerAndExit(player);
         });
     }
 
     public void sendScoreToPlayer() {
         String title = I18n.format("score_title", "blue", blueScore, "red", redScore);
         String subtitle = I18n.format("score_subtitle", "name", getName(lastTouchPlayer).toUpperCase(), "speed", computeSpeedGoal());
-        if (lastTouchPlayer != null) {
-            goals.put(lastTouchPlayer, goals.getOrDefault(lastTouchPlayer, 0) + 1);
-        }
         sendMessageToAllPlayer(title, subtitle, 3, Sound.WEATHER_RAIN, 0.5f);
     }
 
@@ -638,10 +704,6 @@ public class Match {
 
     private void sendTextToAllPlayer(String message) {
         forEachPlayer(true, player -> player.sendMessage(message));
-    }
-
-    private void sendActionBarToAllPlayer(String message) {
-        forEachPlayer(true, player -> player.spigot().sendMessage(ChatMessageType.ACTION_BAR, new TextComponent(message)));
     }
 
     private void send(Set<Player> team, String title, String subtitle, int duration, Sound sound, float pitch) {
@@ -713,8 +775,14 @@ public class Match {
         return name;
     }
 
-    public void setLastTouchPlayer(Player lastTouchPlayer) {
-        this.lastTouchPlayer = lastTouchPlayer.getUniqueId();
+    public synchronized void setLastTouchPlayer(Player lastTouchPlayer) {
+        this.lastTouchPlayer = lastTouchPlayer == null ? null : lastTouchPlayer.getUniqueId();
+    }
+
+    public synchronized void setLastTouchPlayer(Entity ball, Player lastTouchPlayer) {
+        Ball currentBall = balls.get(name);
+        if (currentBall == null || currentBall.getBall() != ball || !canProcessBallPhysics()) return;
+        setLastTouchPlayer(lastTouchPlayer);
     }
 
     public Set<Player> getBlueTeam() {
@@ -748,6 +816,20 @@ public class Match {
                 || redTeam.stream().anyMatch(player -> player != null && playerId.equals(player.getUniqueId()));
     }
 
+    public boolean containsAnyPlayer(UUID playerId) {
+        if (playerId == null) return false;
+        return blueTeam.stream().anyMatch(player -> player != null && playerId.equals(player.getUniqueId()))
+                || redTeam.stream().anyMatch(player -> player != null && playerId.equals(player.getUniqueId()))
+                || spectatorTeam.stream().anyMatch(player -> player != null && playerId.equals(player.getUniqueId()));
+    }
+
+    private boolean isPlayerInOtherActiveMatch(UUID playerId) {
+        for (Match other : matches.values()) {
+            if (other != this && other.isInProgress() && other.containsAnyPlayer(playerId)) return true;
+        }
+        return false;
+    }
+
     public Team getPlayingTeam(Player player) {
         if (player == null) return Team.SPECTATOR;
         if (blueTeam.contains(player)) return Team.BLUE;
@@ -767,7 +849,7 @@ public class Match {
         return matchState;
     }
 
-    public void setMatchState(MatchState matchState) {
+    public synchronized void setMatchState(MatchState matchState) {
         this.matchState = matchState;
     }
 
@@ -775,26 +857,8 @@ public class Match {
         return data;
     }
 
-    public void removeBall() {
+    public synchronized void removeBall() {
         destroyBall(name);
-    }
-
-    public boolean pause() {
-        if (matchState == IN_PROGRESS || matchState == OVERTIME) {
-            matchState = PAUSED;
-            removeBall();
-            return true;
-        }
-        return false;
-    }
-
-    public boolean resume() {
-        if (matchState == PAUSED) {
-            matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
-            startDelayedRound();
-            return true;
-        }
-        return false;
     }
 
     public boolean isInProgress() {
@@ -802,88 +866,205 @@ public class Match {
     }
 
     public boolean canUseDash() {
-        return matchState == IN_PROGRESS && !roundCountdownActive;
+        return (matchState == IN_PROGRESS || matchState == OVERTIME) && !roundCountdownActive;
     }
 
-    public boolean requestTechnicalPause(Player player) {
+    public synchronized boolean canProcessBallPhysics() {
+        return (matchState == IN_PROGRESS || matchState == OVERTIME) && !roundCountdownActive && !canceled;
+    }
+
+    public synchronized Integer tickMatchTimer() {
+        if (matchState != IN_PROGRESS || roundCountdownActive) return null;
+        return --matchTimer;
+    }
+
+    public synchronized String adminPause() {
+        if (!isInProgress()) return I18n.get("match_not_active");
+        if (pauseType == PauseType.ADMIN) return I18n.get("admin_pause_already");
+        if (pauseType == PauseType.TEAM) {
+            cancelPauseExpiry();
+            pauseType = PauseType.ADMIN;
+            pauseTeam = null;
+            sendTextToAllPlayer(I18n.get("team_pause_upgrade"));
+            return I18n.get("team_pause_upgrade");
+        }
+        clearPauseVote(false);
+        enterPause(PauseType.ADMIN, null, 0);
+        sendTextToAllPlayer(I18n.get("admin_pause_started"));
+        return I18n.get("admin_pause_started");
+    }
+
+    public synchronized String adminResume() {
+        if (matchState != PAUSED || pauseType == PauseType.NONE) return I18n.get("resume_required");
+        cancelPauseExpiry();
+        pauseType = PauseType.NONE;
+        pauseTeam = null;
+        matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
+        sendTextToAllPlayer(I18n.get("pause_resumed"));
+        startDelayedRound(60L, true);
+        return I18n.get("pause_resumed");
+    }
+
+    public synchronized boolean requestPauseVote(Player player, int minutes) {
         Team team = getPlayingTeam(player);
-        if (team == Team.SPECTATOR || !isInProgress()) return false;
-        if (pendingTechnicalPause || technicalPauseActive) {
-            sendPlayerMessage(player, "[CCB] 已有技术暂停等待执行。");
-            return true;
+        if (team == Team.SPECTATOR || !isPlayableForPause()) {
+            sendPlayerMessage(player, I18n.get("pause_vote_not_eligible"));
+            return false;
         }
-        int used = getTechnicalPauseCount(team);
-        if (used >= 2) {
-            sendPlayerMessage(player, "[CCB] 本局本队技术暂停次数已用完。");
-            return true;
+        if (minutes != 5 && minutes != 10) {
+            sendPlayerMessage(player, I18n.get("pause_vote_invalid_duration"));
+            return false;
         }
-        setTechnicalPauseCount(team, used + 1);
-        if (roundCountdownActive) {
-            sendTextToAllPlayer("[CCB] " + teamName(team) + "申请技术暂停，立即暂停60秒。剩余 " + (1 - used) + " 次。");
-            startTechnicalPause();
-            return true;
+        if (pauseType != PauseType.NONE) {
+            sendPlayerMessage(player, I18n.get("pause_vote_already"));
+            return false;
         }
-        pendingTechnicalPause = true;
-        sendTextToAllPlayer("[CCB] " + teamName(team) + "申请技术暂停，将在下次开球前暂停60秒。剩余 " + (1 - used) + " 次。");
+        if (pauseVote != null) {
+            sendPlayerMessage(player, I18n.get("pause_vote_already"));
+            return false;
+        }
+        if (isTimeoutUsed(team)) {
+            sendPlayerMessage(player, I18n.get("team_timeout_used"));
+            return false;
+        }
+
+        Set<UUID> eligible = new HashSet<>();
+        for (Player participant : getAllPlayer(false)) {
+            if (participant != null && participant.isOnline()) eligible.add(participant.getUniqueId());
+        }
+        if (eligible.isEmpty()) {
+            sendPlayerMessage(player, I18n.get("pause_vote_not_eligible"));
+            return false;
+        }
+
+        PauseVote vote = new PauseVote(team, minutes, eligible);
+        vote.ballots.put(player.getUniqueId(), true);
+        pauseVote = vote;
+        int token = voteGeneration.incrementAndGet();
+        pauseVoteTask = FoliaScheduler.runGlobalLater(() -> resolvePauseVote(token, true), 20L * 30L);
+        sendTextToAllPlayer(I18n.format("pause_vote_started", "team", teamName(team), "minutes", minutes));
+        sendPauseVoteStatus(vote);
+        if (vote.ballots.size() >= vote.eligible.size()) resolvePauseVote(token, false);
         return true;
     }
 
-    public boolean requestUnpauseVote(Player player) {
-        Team team = getPlayingTeam(player);
-        if (team == Team.SPECTATOR) return false;
-        if (!technicalPauseActive || matchState != PAUSED || pendingRsRequest != null) {
-            sendPlayerMessage(player, "[CCB] 当前没有可取消的技术暂停。");
-            return true;
-        }
-        int total = getActivePlayerCount();
-        if (total <= 1) {
-            resumeFromTechnicalPause("[CCB] 技术暂停已由唯一参赛玩家取消，准备开球。");
-            return true;
-        }
-        unpauseVoteActive = true;
-        unpauseVoteStarter = player.getUniqueId();
-        unpauseAgreeVotes.clear();
-        unpauseDenyVotes.clear();
-        unpauseAgreeVotes.add(player.getUniqueId());
-        sendTextToAllPlayer("[CCB] " + player.getName() + " 发起取消技术暂停投票。输入 .agree 同意，.deny 反对。需要 " + requiredUnpauseVotes(total) + "/" + total + " 票同意。");
-        tryFinishUnpauseVote();
-        return true;
-    }
-
-    public boolean voteUnpause(Player player, boolean agree) {
-        Team team = getPlayingTeam(player);
-        if (team == Team.SPECTATOR) return false;
-        if (!technicalPauseActive || matchState != PAUSED || pendingRsRequest != null) {
-            sendPlayerMessage(player, "[CCB] 当前没有可取消的技术暂停。");
-            return true;
-        }
-        if (!unpauseVoteActive) {
-            sendPlayerMessage(player, "[CCB] 当前没有取消技术暂停投票，请先输入 .un 发起。");
-            return true;
+    public synchronized boolean castPauseVote(Player player, boolean agree) {
+        PauseVote vote = pauseVote;
+        if (vote == null || pauseType != PauseType.NONE || !isPlayableForPause()) {
+            sendPlayerMessage(player, I18n.get("pause_vote_no_active"));
+            return false;
         }
         UUID uuid = player.getUniqueId();
-        if (agree) {
-            unpauseDenyVotes.remove(uuid);
-            unpauseAgreeVotes.add(uuid);
-        } else {
-            unpauseAgreeVotes.remove(uuid);
-            unpauseDenyVotes.add(uuid);
+        if (!vote.eligible.contains(uuid)) {
+            sendPlayerMessage(player, I18n.get("pause_vote_not_eligible"));
+            return false;
         }
-        int total = getActivePlayerCount();
-        sendTextToAllPlayer("[CCB] 取消技术暂停投票: 同意 " + currentAgreeVotes() + "/" + requiredUnpauseVotes(total) + "，反对 " + currentDenyVotes() + "。");
-        tryFinishUnpauseVote();
+        vote.ballots.put(uuid, agree);
+        sendPlayerMessage(player, I18n.format("pause_vote_cast", "vote", I18n.get(agree ? "pause_vote_yes" : "pause_vote_no")));
+        sendPauseVoteStatus(vote);
+        if (vote.ballots.size() >= vote.eligible.size()) {
+            resolvePauseVote(voteGeneration.get(), false);
+        }
         return true;
     }
 
-    public String forceUnpause() {
-        if (!technicalPauseActive || matchState != PAUSED) return "当前没有技术暂停";
-        resumeFromTechnicalPause("[CCB] 管理员已强制取消技术暂停，准备开球。");
-        return "已强制取消技术暂停";
+    private boolean isPlayableForPause() {
+        return matchState == IN_PROGRESS || matchState == GOAL || matchState == OVERTIME;
+    }
+
+    private boolean isTimeoutUsed(Team team) {
+        return team == Team.BLUE ? blueTimeoutUsed : redTimeoutUsed;
+    }
+
+    private void setTimeoutUsed(Team team) {
+        if (team == Team.BLUE) blueTimeoutUsed = true;
+        if (team == Team.RED) redTimeoutUsed = true;
+    }
+
+    private synchronized void enterPause(PauseType type, Team team, int minutes) {
+        cancelPauseExpiry();
+        invalidateRoundSequence();
+        removeBall();
+        pauseType = type;
+        pauseTeam = team;
+        matchState = PAUSED;
+        if (type == PauseType.TEAM) {
+            int token = pauseGeneration.incrementAndGet();
+            pauseExpiryTask = FoliaScheduler.runGlobalLater(() -> {
+                synchronized (Match.this) {
+                    if (pauseGeneration.get() != token || pauseType != PauseType.TEAM || matchState != PAUSED) return;
+                    pauseExpiryTask = null;
+                    Team expiredTeam = pauseTeam;
+                    pauseType = PauseType.NONE;
+                    pauseTeam = null;
+                    matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
+                    sendTextToAllPlayer(I18n.format("team_pause_expired", "team", teamName(expiredTeam)));
+                    startDelayedRound(60L, true);
+                }
+            }, minutes * 60L * 20L);
+        }
+    }
+
+    private synchronized void resolvePauseVote(int token, boolean expired) {
+        if (voteGeneration.get() != token || pauseVote == null) return;
+        PauseVote vote = pauseVote;
+        pauseVote = null;
+        voteGeneration.incrementAndGet();
+        if (pauseVoteTask != null) {
+            if (!expired) pauseVoteTask.cancel();
+            pauseVoteTask = null;
+        }
+        int yes = vote.yesCount();
+        int no = vote.noCount();
+        if (pauseType != PauseType.NONE || !isPlayableForPause()) return;
+        if (yes > no) {
+            setTimeoutUsed(vote.team);
+            sendTextToAllPlayer(I18n.format("pause_vote_passed", "team", teamName(vote.team), "minutes", vote.minutes));
+            enterPause(PauseType.TEAM, vote.team, vote.minutes);
+            sendTextToAllPlayer(I18n.format("team_pause_started", "team", teamName(vote.team), "minutes", vote.minutes));
+        } else if (expired) {
+            sendTextToAllPlayer(I18n.get("pause_vote_expired"));
+        } else {
+            sendTextToAllPlayer(I18n.get("pause_vote_failed"));
+        }
+    }
+
+    private void sendPauseVoteStatus(PauseVote vote) {
+        sendTextToAllPlayer(I18n.format("pause_vote_status",
+                "yes", vote.yesCount(),
+                "no", vote.noCount(),
+                "remaining", vote.eligible.size() - vote.ballots.size()));
+    }
+
+    private synchronized void cancelPauseExpiry() {
+        pauseGeneration.incrementAndGet();
+        if (pauseExpiryTask != null) pauseExpiryTask.cancel();
+        pauseExpiryTask = null;
+    }
+
+    private synchronized void clearPauseVote(boolean announce) {
+        voteGeneration.incrementAndGet();
+        if (pauseVoteTask != null) pauseVoteTask.cancel();
+        pauseVoteTask = null;
+        pauseVote = null;
+        if (announce) sendTextToAllPlayer(I18n.get("pause_vote_expired"));
+    }
+
+    private synchronized void clearPauseState() {
+        cancelPauseExpiry();
+        clearPauseVote(false);
+        pauseType = PauseType.NONE;
+        pauseTeam = null;
     }
 
     public boolean hasPlayer(Player player) {
         if (player == null) return false;
         return blueTeam.contains(player) || redTeam.contains(player) || spectatorTeam.contains(player);
+    }
+
+    public synchronized boolean canCastPauseVote(UUID playerId) {
+        return playerId != null && pauseVote != null && pauseType == PauseType.NONE
+                && isPlayableForPause() && pauseVote.eligible.contains(playerId);
     }
 
     public boolean isSpectator(Player player) {
@@ -893,7 +1074,10 @@ public class Match {
     public boolean removeSpectator(Player player) {
         if (!isSpectator(player)) return false;
         spectatorTeam.remove(player);
-        runForPlayer(player, PlayerStateCache::restore);
+        runForPlayer(player, p -> {
+            disableSpectatorState(p);
+            PlayerStateCache.restore(p);
+        });
         return true;
     }
 
@@ -923,189 +1107,10 @@ public class Match {
         originalScales.clear();
     }
 
-    private void tryFinishUnpauseVote() {
-        if (!unpauseVoteActive || !technicalPauseActive || matchState != PAUSED) return;
-        int total = getActivePlayerCount();
-        int required = requiredUnpauseVotes(total);
-        if (currentAgreeVotes() >= required) {
-            resumeFromTechnicalPause("[CCB] 取消技术暂停投票通过，准备开球。");
-        }
-    }
-
-    private void resumeFromTechnicalPause(String message) {
-        technicalPauseActive = false;
-        clearUnpauseVote();
-        matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
-        sendTextToAllPlayer(message);
-        startDelayedRound(200L);
-    }
-
-    private void clearUnpauseVote() {
-        unpauseVoteActive = false;
-        unpauseVoteStarter = null;
-        unpauseAgreeVotes.clear();
-        unpauseDenyVotes.clear();
-    }
-
-    private int getActivePlayerCount() {
-        return (int) getAllPlayer(false).stream()
-                .filter(player -> player != null && player.isOnline())
-                .count();
-    }
-
-    private int currentAgreeVotes() {
-        return countCurrentVotes(unpauseAgreeVotes);
-    }
-
-    private int currentDenyVotes() {
-        return countCurrentVotes(unpauseDenyVotes);
-    }
-
-    private int countCurrentVotes(Set<UUID> votes) {
-        int count = 0;
-        for (Player player : getAllPlayer(false)) {
-            if (player != null && player.isOnline() && votes.contains(player.getUniqueId())) count++;
-        }
-        return count;
-    }
-
-    private int requiredUnpauseVotes(int total) {
-        if (total <= 1) return 1;
-        if (total <= 4) return total;
-        return (int) Math.ceil(total * 0.8D);
-    }
-
-    public boolean requestRs(Player player, String reason) {
-        Team team = getPlayingTeam(player);
-        if (team == Team.SPECTATOR || !isInProgress()) return false;
-        if (reason == null || reason.isBlank()) {
-            sendPlayerMessage(player, "[CCB] 用法: .rs 原因");
-            return true;
-        }
-        if (pendingRsRequest != null) {
-            sendPlayerMessage(player, "[CCB] 已有rs请求等待管理员审核。");
-            return true;
-        }
-        int used = getRsRequestCount(team);
-        if (used >= 2) {
-            sendPlayerMessage(player, "[CCB] 本局本队rs次数已用完。");
-            return true;
-        }
-        setRsRequestCount(team, used + 1);
-        MatchState requestState = matchState;
-        boolean canRollbackGoal = requestState == GOAL && lastGoalVoidable && lastGoalTeam != null;
-        int requestId = ++rsRequestSequence;
-        pendingRsRequest = new RsRequest(requestId, player.getUniqueId(), player.getName(), team, reason.trim(), canRollbackGoal);
-        invalidateRoundSequence();
-        removeBall();
-        matchState = PAUSED;
-        sendTextToAllPlayer("[CCB] " + player.getName() + " 提出了rs请求，对局进入开局等待并暂停审核。理由: " + reason.trim());
-        notifyAdminsRsRequest(pendingRsRequest);
-        return true;
-    }
-
-    private void suspendRsPlayer(Player player) {
-        rsSuspendedPlayers.add(player.getUniqueId());
-        blueTeam.remove(player);
-        redTeam.remove(player);
-        spectatorTeam.add(player);
-        sendPlayerMessage(player, "[CCB] 滥用rs，下一次有人进球后才能继续参赛。");
-    }
-
-    private void notifyAdminsRsRequest(RsRequest request) {
-        for (Player admin : Bukkit.getOnlinePlayers()) {
-            if (!admin.hasPermission("cubeball.admin")) continue;
-            TextComponent message = new TextComponent("[CCB] 新的rs请求: 比赛=" + name + " 玩家=" + request.playerName
-                    + " 队伍=" + teamName(request.team) + " 理由=" + request.reason
-                    + (request.rollbackGoal ? " 操作=同意后回档上次比分 " : " 操作=同意后进入开局等待 "));
-            TextComponent approve = new TextComponent("[✅]");
-            approve.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ccb rsreview " + name + " " + request.id + " approve"));
-            approve.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new ComponentBuilder("同意并撤销最近一次进球").create()));
-            TextComponent deny = new TextComponent(" [❌]");
-            deny.setClickEvent(new ClickEvent(ClickEvent.Action.RUN_COMMAND, "/ccb rsreview " + name + " " + request.id + " deny"));
-            deny.setHoverEvent(new HoverEvent(HoverEvent.Action.SHOW_TEXT, new ComponentBuilder("不同意，继续比赛").create()));
-            message.addExtra(approve);
-            message.addExtra(deny);
-            runForPlayer(admin, p -> p.spigot().sendMessage(message));
-        }
-    }
-
-    public String reviewRs(Player admin, int requestId, boolean approve) {
-        if (pendingRsRequest == null || pendingRsRequest.id != requestId) return "rs请求不存在或已处理";
-        RsRequest request = pendingRsRequest;
-        pendingRsRequest = null;
-        if (approve) {
-            if (request.rollbackGoal) {
-                if (!voidLastGoal()) {
-                    resumeAfterReview();
-                    return "最近进球已无法作废，比赛已继续";
-                }
-                sendTextToAllPlayer("[CCB] 管理员同意rs，已撤销最近一次进球。理由: " + request.reason);
-            } else {
-                sendTextToAllPlayer("[CCB] 管理员同意rs，当前球权作废，进入开局等待。理由: " + request.reason);
-            }
-        } else {
-            suspendRsPlayer(request.playerId, request.playerName);
-            sendTextToAllPlayer("[CCB] 管理员拒绝rs，判定为滥用rs，比赛继续。理由: " + request.reason);
-        }
-        resumeAfterReview();
-        return approve ? "已同意rs" : "已拒绝rs";
-    }
-
-    private void resumeAfterReview() {
-        technicalPauseActive = false;
-        matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
-        startDelayedRound();
-    }
-
-    private boolean voidLastGoal() {
-        if (!lastGoalVoidable || lastGoalTeam == null) return false;
-        if (lastGoalTeam == Team.BLUE) blueScore = Math.max(0, blueScore - 1);
-        if (lastGoalTeam == Team.RED) redScore = Math.max(0, redScore - 1);
-        if (lastGoalPlayer != null) {
-            goals.computeIfPresent(lastGoalPlayer, (uuid, count) -> count <= 1 ? null : count - 1);
-        }
-        lastGoalVoidable = false;
-        lastGoalTeam = null;
-        lastGoalPlayer = null;
-        return true;
-    }
-
-    private void suspendRsPlayer(UUID playerId, String playerName) {
-        rsSuspendedPlayers.add(playerId);
-        blueTeam.removeIf(player -> player != null && player.getUniqueId().equals(playerId));
-        redTeam.removeIf(player -> player != null && player.getUniqueId().equals(playerId));
-        Player player = Bukkit.getPlayer(playerId);
-        if (player != null) {
-            spectatorTeam.add(player);
-            sendPlayerMessage(player, "[CCB] 滥用rs，下一次有人进球后才能继续参赛。");
-        } else {
-            spectatorTeam.removeIf(p -> p != null && p.getUniqueId().equals(playerId));
-        }
-    }
-
-    private int getTechnicalPauseCount(Team team) {
-        return team == Team.BLUE ? blueTechnicalPauses : redTechnicalPauses;
-    }
-
-    private void setTechnicalPauseCount(Team team, int count) {
-        if (team == Team.BLUE) blueTechnicalPauses = count;
-        else redTechnicalPauses = count;
-    }
-
-    private int getRsRequestCount(Team team) {
-        return team == Team.BLUE ? blueRsRequests : redRsRequests;
-    }
-
-    private void setRsRequestCount(Team team, int count) {
-        if (team == Team.BLUE) blueRsRequests = count;
-        else redRsRequests = count;
-    }
-
     private String teamName(Team team) {
-        if (team == Team.BLUE) return "蓝队";
-        if (team == Team.RED) return "红队";
-        return "观众";
+        if (team == Team.BLUE) return I18n.get("blue_name");
+        if (team == Team.RED) return I18n.get("red_name");
+        return I18n.get("spectator_name");
     }
 
     public void applyTeamKit(Player player, Team team) {
@@ -1141,21 +1146,28 @@ public class Match {
         return new NamespacedKey(plugin, "team_kit");
     }
 
-    private static final class RsRequest {
-        final int id;
-        final UUID playerId;
-        final String playerName;
-        final Team team;
-        final String reason;
-        final boolean rollbackGoal;
+    private enum PauseType {
+        NONE, ADMIN, TEAM
+    }
 
-        RsRequest(int id, UUID playerId, String playerName, Team team, String reason, boolean rollbackGoal) {
-            this.id = id;
-            this.playerId = playerId;
-            this.playerName = playerName;
+    private static final class PauseVote {
+        final Team team;
+        final int minutes;
+        final Set<UUID> eligible;
+        final Map<UUID, Boolean> ballots = new ConcurrentHashMap<>();
+
+        PauseVote(Team team, int minutes, Set<UUID> eligible) {
             this.team = team;
-            this.reason = reason;
-            this.rollbackGoal = rollbackGoal;
+            this.minutes = minutes;
+            this.eligible = Set.copyOf(eligible);
+        }
+
+        int yesCount() {
+            return (int) ballots.values().stream().filter(Boolean::booleanValue).count();
+        }
+
+        int noCount() {
+            return (int) ballots.values().stream().filter(value -> !value).count();
         }
     }
 }

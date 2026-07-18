@@ -30,7 +30,8 @@ public class SettingsMenu {
         MatchState state = match.getMatchState();
         builder.setSlot(0, 5, getState(state), match.getName(), null);
         builder.setSlot(8, 5, BARRIER, I18n.get("menu_desc_delete"), null).setAction((p, v) -> {
-            match.removeBall();
+            if (match.isInProgress()) match.forceEndMatch();
+            else match.cancel();
             CubeBall.matches.remove(match.getName());
             CubeBall.save();
             v.openParent(p);
@@ -181,13 +182,17 @@ public class SettingsMenu {
             });
         });
         builder.setSlot(2, 2, OBSERVER, I18n.get("menu_desc_scanplayer"), match.buildTeam()).setAction((p, v) -> {
+            if (match.isInProgress()) {
+                builder.refresh();
+                return;
+            }
             match.scanPlayer();
             p.sendMessage(I18n.get("match_ready"));
             builder.refresh();
         });
-        if (state == MatchState.IN_PROGRESS || state == MatchState.GOAL) {
+        if (match.isInProgress()) {
             builder.setSlot(6, 2, RED_WOOL, I18n.get("menu_desc_stop"), null).setAction((p, v) -> {
-                match.cancel();
+                match.forceEndMatch();
                 builder.refresh();
             }).setPrefix(ChatColor.RED.toString());
         } else {

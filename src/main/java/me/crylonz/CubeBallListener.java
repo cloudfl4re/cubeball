@@ -10,15 +10,18 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.EntityType;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
+import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
+import org.bukkit.event.entity.EntityExhaustionEvent;
+import org.bukkit.event.entity.FoodLevelChangeEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
-import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerDropItemEvent;
 import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
+import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
@@ -59,27 +62,31 @@ public class CubeBallListener implements Listener {
         }
         e.setCancelled(true);
 
-        if (ballData == null || ballData.getBall() == null) {
-            debug("landing ignored id=" + ballId + " ballData missing");
-            return;
+        Vector velocity;
+        synchronized (match) {
+            if (!match.canProcessBallPhysics() || balls.get(ballId) != ballData
+                    || ballData == null || ballData.getBall() == null) {
+                debug("landing ignored id=" + ballId + " ballData missing or match paused");
+                return;
+            }
+
+            velocity = ballData.getBall().getVelocity();
+            debug("landing id=" + ballId
+                    + " to=" + e.getTo()
+                    + " carrier=" + (carrier == null ? "vanilla:" + match.getData().cubeBallBlock : carrier.getAsString())
+                    + " loc=" + e.getEntity().getLocation()
+                    + " oldVelocity=" + velocity
+                    + " valid=" + ballData.getBall().isValid()
+                    + " dead=" + ballData.getBall().isDead());
+            double zVelocity = abs(velocity.getZ()) / 1.5;
+            double xVelocity = abs(velocity.getX()) / 1.5;
+            double maxZX = max(zVelocity, xVelocity);
+
+            velocity.setY(min(maxZX, 0.5));
+
+            ballData = respawnBall(match.getData(), ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
+            ballData.getBall().setVelocity(velocity);
         }
-
-        Vector velocity = ballData.getBall().getVelocity();
-        debug("landing id=" + ballId
-                + " to=" + e.getTo()
-                + " carrier=" + (carrier == null ? "vanilla:" + match.getData().cubeBallBlock : carrier.getAsString())
-                + " loc=" + e.getEntity().getLocation()
-                + " oldVelocity=" + velocity
-                + " valid=" + ballData.getBall().isValid()
-                + " dead=" + ballData.getBall().isDead());
-        double zVelocity = abs(velocity.getZ()) / 1.5;
-        double xVelocity = abs(velocity.getX()) / 1.5;
-        double maxZX = max(zVelocity, xVelocity);
-
-        velocity.setY(min(maxZX, 0.5));
-
-        ballData = respawnBall(match.getData(), ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
-        ballData.getBall().setVelocity(velocity);
 
         if (abs(velocity.getX() + velocity.getY() + velocity.getZ()) <= 0.001 || velocity.getY() < 0.025) {
             ballData.getBall().setVelocity(ballData.getBall().getVelocity().zero());
@@ -105,45 +112,48 @@ public class CubeBallListener implements Listener {
     }
 
     @EventHandler
-    public static void onChat(AsyncPlayerChatEvent event) {
-        String message = event.getMessage().trim();
-        String lower = message.toLowerCase(Locale.ROOT);
-        if (!lower.equals(".p") && !lower.equals(".un") && !lower.equals(".agree") && !lower.equals(".deny")
-                && !lower.equals(".rs") && !lower.startsWith(".rs ")) return;
-
-        Player player = event.getPlayer();
+    public static void onPlayerJoin(PlayerJoinEvent e) {
+        Player player = e.getPlayer();
+        boolean activeMatch = false;
         for (Match match : matches.values()) {
-            if (!match.containsPlayer(player)) continue;
-            event.setCancelled(true);
-            if (lower.equals(".p")) {
-                FoliaScheduler.runGlobal(() -> match.requestTechnicalPause(player));
-                return;
-            }
-            if (lower.equals(".un")) {
-                FoliaScheduler.runGlobal(() -> match.requestUnpauseVote(player));
-                return;
-            }
-            if (lower.equals(".agree")) {
-                FoliaScheduler.runGlobal(() -> match.voteUnpause(player, true));
-                return;
-            }
-            if (lower.equals(".deny")) {
-                FoliaScheduler.runGlobal(() -> match.voteUnpause(player, false));
-                return;
-            }
-            if (lower.equals(".rs") || lower.startsWith(".rs ")) {
-                String reason = message.length() > 3 ? message.substring(3).trim() : "";
-                FoliaScheduler.runGlobal(() -> match.requestRs(player, reason));
-                return;
-            }
+            match.replacePlayer(player);
+            if (match.isInProgress() && match.hasPlayer(player)) activeMatch = true;
         }
+        if (!activeMatch && (PlayerStateCache.has(player) || isExiting(player.getUniqueId()))) restorePlayerAndExit(player);
+        FoliaScheduler.runEntityLater(player, () -> {
+            for (Match match : matches.values()) {
+                if (match.isInProgress() && match.hasPlayer(player)) return;
+            }
+            if (PlayerStateCache.has(player) || isExiting(player.getUniqueId())) restorePlayerAndExit(player);
+        }, 1L);
     }
 
     @EventHandler
-    public static void onPlayerJoin(PlayerJoinEvent e) {
-        Player player = e.getPlayer();
-        for (Match match : matches.values()) {
-            match.replacePlayer(player);
+    public static void onPlayerRespawn(PlayerRespawnEvent event) {
+        Player player = event.getPlayer();
+        FoliaScheduler.runEntityLater(player, () -> {
+            for (Match match : matches.values()) {
+                if (match.isInProgress() && match.isSpectator(player)) {
+                    match.refreshSpectatorState(player);
+                    return;
+                }
+            }
+        }, 1L);
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public static void onExhaustion(EntityExhaustionEvent event) {
+        if (event.getEntity() instanceof Player player && shouldPreserveFood(player)) {
+            event.setCancelled(true);
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public static void onFoodLevelChange(FoodLevelChangeEvent event) {
+        if (event.getEntity() instanceof Player player
+                && event.getFoodLevel() < player.getFoodLevel()
+                && shouldPreserveFood(player)) {
+            event.setCancelled(true);
         }
     }
 
@@ -205,9 +215,14 @@ public class CubeBallListener implements Listener {
             return;
         }
         for (Match match : matches.values()) {
-            if (match.isInProgress() && match.containsPlayer(player)) {
+            if (match.isInProgress() && (match.containsPlayer(player) || match.isSpectator(player))) {
                 event.setCancelled(true);
-                player.setAllowFlight(false);
+                if (match.isSpectator(player)) {
+                    player.setAllowFlight(true);
+                    player.setFlying(true);
+                } else {
+                    player.setAllowFlight(false);
+                }
                 return;
             }
         }
@@ -225,6 +240,7 @@ public class CubeBallListener implements Listener {
     public static void onCommand(PlayerCommandPreprocessEvent event) {
         Player player = event.getPlayer();
         if (CubeBall.isPlaying(player.getUniqueId())) {
+            if (isAllowedPlayingCommand(event.getMessage(), player)) return;
             event.setCancelled(true);
             player.sendMessage(com.github.squi2rel.cb.I18n.get("match_commands_blocked"));
             return;
@@ -241,6 +257,20 @@ public class CubeBallListener implements Listener {
             event.setCancelled(true);
             return;
         }
+    }
+
+    private static boolean isAllowedPlayingCommand(String command, Player player) {
+        String value = command.startsWith("/") ? command.substring(1) : command;
+        String[] parts = value.trim().split("\\s+");
+        if (parts.length < 2) return false;
+        String label = parts[0].toLowerCase(Locale.ROOT);
+        int namespace = label.indexOf(':');
+        if (namespace >= 0) label = label.substring(namespace + 1);
+        if (!label.equals("ccb")) return false;
+        String subcommand = parts[1].toLowerCase(Locale.ROOT);
+        if (subcommand.equals("votepause")) return player.hasPermission("cubeball.timeout");
+        return player.hasPermission("cubeball.admin")
+                && (subcommand.equals("pause") || subcommand.equals("resume") || subcommand.equals("end"));
     }
 
     @EventHandler
@@ -267,6 +297,14 @@ public class CubeBallListener implements Listener {
         if (parts.length < 3) return false;
         Player target = Bukkit.getPlayerExact(parts[2]);
         return target != null && CubeBall.isPlaying(target.getUniqueId());
+    }
+
+    private static boolean shouldPreserveFood(Player player) {
+        if (JoinSignManager.isWaiting(player)) return true;
+        for (Match match : matches.values()) {
+            if (match.isInProgress() && match.hasPlayer(player)) return true;
+        }
+        return false;
     }
 
     private String getBallId(EntityChangeBlockEvent event) {

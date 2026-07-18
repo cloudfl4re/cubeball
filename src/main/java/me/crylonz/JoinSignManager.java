@@ -193,6 +193,7 @@ public final class JoinSignManager {
         if (match.isInProgress()) {
             if (!isPlayingAnotherMatch(player)) {
                 if (isWaiting(player)) removeWaitingPlayer(player, true);
+                PlayerStateCache.save(player);
                 match.addPlayerToTeam(player, Team.SPECTATOR);
                 PlayerStateCache.clear(player);
                 match.applyTeamKit(player, Team.SPECTATOR);

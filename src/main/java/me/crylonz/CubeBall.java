@@ -41,6 +41,7 @@ public class CubeBall extends JavaPlugin {
     public static Map<String, Match> matches = new ConcurrentHashMap<>();
     public static Map<UUID, Long> cooldown = new ConcurrentHashMap<>();
     private static final Set<String> appearanceWarnings = ConcurrentHashMap.newKeySet();
+    private static final Map<UUID, Integer> exitGenerations = new ConcurrentHashMap<>();
     private static final Material ITEM_BALL_CARRIER = Material.WHITE_WOOL;
     private static final double ROLL_DEGREES_PER_BLOCK = 120.0;
     private static final double GOALKEEPER_GOAL_RADIUS = 3.0;
@@ -53,6 +54,7 @@ public class CubeBall extends JavaPlugin {
     public static boolean ballRollEnabled;
     public static double ballRollSpeed;
     private static volatile Location lobbySpawn;
+    private static volatile Location exitSpawn;
     public static void generateBall(MatchData data, String id, Location location, Vector lastVelocity) {
         if (balls.get(id) != null) {
             throw new IllegalStateException("Same ID cannot be put on the same ball");
@@ -232,6 +234,7 @@ public class CubeBall extends JavaPlugin {
         ballRollEnabled = getConfig().getBoolean("ball.roll.enabled", true);
         ballRollSpeed = getConfig().getDouble("ball.roll.speed", 1.0);
         lobbySpawn = getConfig().getSerializable("lobbySpawn", Location.class);
+        exitSpawn = getConfig().getSerializable("exitSpawn", Location.class);
 
         String lang = getConfig().getString("language", "en");
         I18n.init(this, lang);
@@ -242,6 +245,12 @@ public class CubeBall extends JavaPlugin {
         if (section == null) section = new MemoryConfiguration();
         for (String key : Objects.requireNonNull(section).getKeys(false)) {
             matches.put(key, new Match(key, MatchData.from(section.getConfigurationSection(key))));
+        }
+
+        for (Player player : Bukkit.getOnlinePlayers()) {
+            FoliaScheduler.runEntity(player, () -> {
+                if (PlayerStateCache.has(player)) restorePlayerAndExit(player);
+            });
         }
 
         maxMatchPerPlayer = getConfig().getInt("maxMatchPerPlayer", 3);
@@ -341,6 +350,67 @@ public class CubeBall extends JavaPlugin {
         }
     }
 
+    public static Location getExitSpawn() {
+        Location spawn = exitSpawn;
+        return spawn == null ? null : spawn.clone();
+    }
+
+    public static void setExitSpawn(Location location) {
+        exitSpawn = location == null ? null : location.clone();
+        if (plugin != null) {
+            plugin.getConfig().set("exitSpawn", exitSpawn);
+            plugin.saveConfig();
+        }
+    }
+
+    public static void restorePlayerAndExit(Player player) {
+        UUID playerId = player.getUniqueId();
+        int exitToken = exitGenerations.merge(playerId, 1, Integer::sum);
+        Location spawn = getExitSpawn();
+        if (spawn == null) {
+            restorePlayerState(player, exitToken);
+            return;
+        }
+        teleportForExit(player, spawn, 1, exitToken);
+    }
+
+    public static boolean isExiting(UUID playerId) {
+        return playerId != null && exitGenerations.containsKey(playerId);
+    }
+
+    public static void reservePlayerExit(Player player) {
+        if (player != null) exitGenerations.putIfAbsent(player.getUniqueId(), 0);
+    }
+
+    private static void teleportForExit(Player player, Location spawn, int retries, int exitToken) {
+        try {
+            player.teleportAsync(spawn).whenComplete((success, error) -> {
+                if (!Objects.equals(exitGenerations.get(player.getUniqueId()), exitToken)) return;
+                if (Boolean.TRUE.equals(success)) {
+                    FoliaScheduler.runEntity(player, () -> restorePlayerState(player, exitToken));
+                } else if (retries > 0 && player.isOnline()) {
+                    FoliaScheduler.runEntityLater(player, () -> teleportForExit(player, spawn, retries - 1, exitToken), 20L);
+                } else if (player.isOnline()) {
+                    FoliaScheduler.runEntity(player, () -> restorePlayerState(player, exitToken));
+                }
+            });
+        } catch (RuntimeException ignored) {
+            restorePlayerState(player, exitToken);
+        }
+    }
+
+    private static void restorePlayerState(Player player, int exitToken) {
+        UUID playerId = player.getUniqueId();
+        if (!Objects.equals(exitGenerations.get(playerId), exitToken)) return;
+        org.bukkit.potion.PotionEffect effect = player.getPotionEffect(org.bukkit.potion.PotionEffectType.SLOWNESS);
+        if (effect != null && effect.getAmplifier() >= 255) player.removePotionEffect(org.bukkit.potion.PotionEffectType.SLOWNESS);
+        player.setInvisible(false);
+        player.setFlying(false);
+        player.setAllowFlight(false);
+        PlayerStateCache.restore(player);
+        exitGenerations.remove(playerId, exitToken);
+    }
+
     public static boolean isPlaying(UUID playerId) {
         if (playerId == null) return false;
         for (Match match : matches.values()) {
@@ -412,8 +482,9 @@ public class CubeBall extends JavaPlugin {
             });
 
             for (Match match : matches.values()) {
-                if (match.getMatchState().equals(IN_PROGRESS)) {
-                    int matchTimer = --match.matchTimer;
+                Integer matchTimerValue = match.tickMatchTimer();
+                if (matchTimerValue != null) {
+                    int matchTimer = matchTimerValue;
 
                     if (matchTimer % 60 == 0 && matchTimer > 0) {
                         match.getAllPlayer(true).forEach(player -> {
@@ -431,11 +502,8 @@ public class CubeBall extends JavaPlugin {
                     }
                     if (matchTimer <= 0) {
                         match.endMatch();
-                        if (match.getMatchState() != OVERTIME) {
-                            match.setMatchState(READY);
-                        }
                     }
-                } else {
+                } else if (!match.getMatchState().equals(OVERTIME)) {
                     for (Player player : match.getAllPlayer(false)) {
                         cooldown.remove(player.getUniqueId());
                     }
@@ -493,7 +561,7 @@ public class CubeBall extends JavaPlugin {
                         ballData.setPlayerCollisionTick(0);
 
                         if (match != null) {
-                            match.setLastTouchPlayer(player);
+                            match.setLastTouchPlayer(ball, player);
                         }
                     }
                 });

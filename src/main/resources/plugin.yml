@@ -11,9 +11,8 @@ softdepend:
   - BodySize
 commands:
   ccb:
-    permission: cubeball.manage
     description: Control command
-    usage: /ccb [debug|glow|roll|setballhand|setballce|spawn]
+    usage: /ccb [debug|glow|roll|setballhand|setballce|spawn|exitspawn|pause|resume|end|votepause]
 permissions:
   cubeball.manage:
     description: Allows player to manage cubeball
@@ -21,3 +20,8 @@ permissions:
   cubeball.admin:
     description: Manage all match
     default: op
+    children:
+      cubeball.manage: true
+  cubeball.timeout:
+    description: Allows players to vote for a team timeout
+    default: true
