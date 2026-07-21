@@ -21,6 +21,7 @@ import org.bukkit.util.Vector;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicInteger;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import static me.crylonz.CubeBall.*;
@@ -36,6 +37,8 @@ public class Match {
     private final Set<Player> spectatorTeam = ConcurrentHashMap.newKeySet();
     private final Map<UUID, Integer> goals = new ConcurrentHashMap<>();
     private final Map<UUID, Double> originalScales = new ConcurrentHashMap<>();
+    private final Map<UUID, Long> spectatorStateTokens = new ConcurrentHashMap<>();
+    private final AtomicLong spectatorStateSequence = new AtomicLong();
     private volatile MatchState matchState;
     private volatile UUID lastTouchPlayer;
     private volatile int blueScore = 0;
@@ -71,12 +74,20 @@ public class Match {
         canceled = false;
         matchState = CREATED;
         List<Player> previousPlayers = getAllPlayer(true);
+        for (Player previous : previousPlayers) {
+            if (previous != null) invalidateSpectatorState(previous.getUniqueId());
+        }
         blueTeam.clear();
         redTeam.clear();
         spectatorTeam.clear();
         for (Player previous : previousPlayers) {
             runForPlayer(previous, player -> {
-                if (hasPlayer(player) || isPlayerInOtherActiveMatch(player.getUniqueId())) return;
+                UUID playerId = player.getUniqueId();
+                if (isPlayerInOtherActiveMatch(playerId)) return;
+                if (hasPlayer(player)) {
+                    if (!isSpectator(playerId)) disableSpectatorState(player);
+                    return;
+                }
                 PotionEffect effect = player.getPotionEffect(PotionEffectType.SLOWNESS);
                 if (effect != null && effect.getAmplifier() >= 255) player.removePotionEffect(PotionEffectType.SLOWNESS);
                 disableSpectatorState(player);
@@ -137,7 +148,9 @@ public class Match {
                         if (entity instanceof Player) {
                             Player player = (Player) entity;
                             if (player.getVehicle() == null && !isExiting(player.getUniqueId())
-                                    && !isPlayerInOtherActiveMatch(player.getUniqueId())) addPlayerToTeam(player, team);
+                                    && !isPlayerInOtherActiveMatch(player.getUniqueId())) {
+                                addPlayerToTeam(player, team);
+                            }
                         }
                     }
                 }
@@ -162,7 +175,11 @@ public class Match {
             reset();
             blueTeam.removeIf(player -> player == null || isPlayerInOtherActiveMatch(player.getUniqueId()));
             redTeam.removeIf(player -> player == null || isPlayerInOtherActiveMatch(player.getUniqueId()));
-            spectatorTeam.removeIf(player -> player == null || isPlayerInOtherActiveMatch(player.getUniqueId()));
+            spectatorTeam.removeIf(player -> {
+                boolean remove = player == null || isPlayerInOtherActiveMatch(player.getUniqueId());
+                if (remove && player != null) invalidateSpectatorState(player.getUniqueId());
+                return remove;
+            });
             if (!blueTeam.isEmpty() || !redTeam.isEmpty()) {
                 sortSpawns();
 
@@ -259,7 +276,7 @@ public class Match {
             normalizePlayerForMatch(player);
             PlayerStateCache.clear(player);
             applyTeamKit(player, getPlayingTeam(player));
-            player.setInvisible(false);
+            clearSpectatorVisibility(player);
             player.setAllowFlight(false);
             player.setFlying(false);
             setMatchHunger(player);
@@ -369,7 +386,7 @@ public class Match {
         boolean participant = replacePlayer(blueTeam, player);
         participant = replacePlayer(redTeam, player) || participant;
         if (participant && isInProgress()) refreshParticipantState(player);
-        if (replacePlayer(spectatorTeam, player) && isInProgress()) {
+        if (replacePlayer(spectatorTeam, player) && hasActiveSpectatorState(player.getUniqueId())) {
             refreshSpectatorState(player);
         }
     }
@@ -381,7 +398,7 @@ public class Match {
             normalizePlayerForMatch(target);
             PlayerStateCache.clear(target);
             applyTeamKit(target, getPlayingTeam(target));
-            target.setInvisible(false);
+            clearSpectatorVisibility(target);
             target.setAllowFlight(false);
             target.setFlying(false);
             setMatchHunger(target);
@@ -389,10 +406,8 @@ public class Match {
     }
 
     public void refreshSpectatorState(Player player) {
-        if (isInProgress() && isSpectator(player)) {
-            runForPlayer(player, target -> {
-                if (isInProgress() && isSpectator(target)) enableSpectatorState(target);
-            });
+        if (isSpectator(player) && !isExiting(player.getUniqueId())) {
+            scheduleSpectatorState(player, null);
         }
     }
 
@@ -416,24 +431,53 @@ public class Match {
     }
 
 
-    public void addPlayerToTeam(Player p, Team team) {
-        if (p != null) {
-            if (team.equals(Team.BLUE)) {
-                blueTeam.add(p);
-                redTeam.remove(p);
-                if (spectatorTeam.remove(p)) runForPlayer(p, this::disableSpectatorState);
-            } else if (team.equals(Team.RED)) {
-                redTeam.add(p);
-                blueTeam.remove(p);
-                if (spectatorTeam.remove(p)) runForPlayer(p, this::disableSpectatorState);
-            } else {
-                spectatorTeam.add(p);
-                blueTeam.remove(p);
-                redTeam.remove(p);
-                runForPlayer(p, this::enableSpectatorState);
+    public boolean addPlayerToTeam(Player p, Team team) {
+        if (p == null || team == null) return false;
+        if (team == Team.BLUE || team == Team.RED) {
+            Set<Player> target = team == Team.BLUE ? blueTeam : redTeam;
+            if (!target.contains(p) && isTeamFull(team)) {
+                sendPlayerMessage(p, I18n.format("team_full",
+                        "team", I18n.get(team == Team.BLUE ? "blue_name" : "red_name"),
+                        "max", getTeamMaxSize(team)));
+                return false;
             }
-            sendPlayerMessage(p, I18n.format("your_team", "team", I18n.get(team == Team.BLUE ? "blue_name" : team == Team.SPECTATOR ? "spectator_name" : "red_name")));
         }
+        if (team.equals(Team.BLUE)) {
+            invalidateSpectatorState(p.getUniqueId());
+            blueTeam.add(p);
+            redTeam.remove(p);
+            if (spectatorTeam.remove(p)) runForPlayer(p, this::disableSpectatorState);
+        } else if (team.equals(Team.RED)) {
+            invalidateSpectatorState(p.getUniqueId());
+            redTeam.add(p);
+            blueTeam.remove(p);
+            if (spectatorTeam.remove(p)) runForPlayer(p, this::disableSpectatorState);
+        } else {
+            spectatorTeam.add(p);
+            blueTeam.remove(p);
+            redTeam.remove(p);
+            scheduleSpectatorState(p, null);
+        }
+        sendPlayerMessage(p, I18n.format("your_team", "team", I18n.get(team == Team.BLUE ? "blue_name" : team == Team.SPECTATOR ? "spectator_name" : "red_name")));
+        return true;
+    }
+
+    public int getTeamMaxSize(Team team) {
+        if (team == Team.BLUE) return data.blueTeamSpawns.size();
+        if (team == Team.RED) return data.redTeamSpawns.size();
+        return Integer.MAX_VALUE;
+    }
+
+    public int getTeamSize(Team team) {
+        if (team == Team.BLUE) return blueTeam.size();
+        if (team == Team.RED) return redTeam.size();
+        if (team == Team.SPECTATOR) return spectatorTeam.size();
+        return 0;
+    }
+
+    public boolean isTeamFull(Team team) {
+        if (team != Team.BLUE && team != Team.RED) return false;
+        return getTeamSize(team) >= getTeamMaxSize(team);
     }
 
     public boolean isConfiguredForStart() {
@@ -445,18 +489,42 @@ public class Match {
     }
 
     public void prepareLobbyTeams(Collection<Player> redPlayers, Collection<Player> bluePlayers, Collection<Player> spectatorPlayers) {
+        Map<UUID, Player> previousSpectators = new LinkedHashMap<>();
+        for (Player spectator : spectatorTeam) {
+            if (spectator == null) continue;
+            UUID playerId = spectator.getUniqueId();
+            previousSpectators.put(playerId, spectator);
+            invalidateSpectatorState(playerId);
+        }
+
         redTeam.clear();
         blueTeam.clear();
         spectatorTeam.clear();
 
-        addLobbyPlayers(redTeam, redPlayers);
-        addLobbyPlayers(blueTeam, bluePlayers);
-        addLobbyPlayers(spectatorTeam, spectatorPlayers);
+        List<Player> overflow = new ArrayList<>();
+        addLobbyPlayers(redTeam, redPlayers, getTeamMaxSize(Team.RED), overflow);
+        addLobbyPlayers(blueTeam, bluePlayers, getTeamMaxSize(Team.BLUE), overflow);
+        addLobbyPlayers(spectatorTeam, spectatorPlayers, Integer.MAX_VALUE, null);
+        for (Player player : overflow) {
+            if (player != null && player.isOnline()) spectatorTeam.add(player);
+        }
         spectatorTeam.removeAll(redTeam);
         spectatorTeam.removeAll(blueTeam);
+
+        for (Map.Entry<UUID, Player> entry : previousSpectators.entrySet()) {
+            UUID playerId = entry.getKey();
+            Player previous = entry.getValue();
+            if (isSpectator(playerId)) continue;
+            if (containsAnyPlayer(playerId)) {
+                runForPlayer(previous, this::disableSpectatorState);
+            } else {
+                CubeBall.reservePlayerExit(playerId);
+                runForPlayer(previous, CubeBall::restorePlayerAndExit);
+            }
+        }
+
         for (Player spectator : spectatorTeam) {
-            runForPlayer(spectator, player -> {
-                enableSpectatorState(player);
+            scheduleSpectatorState(spectator, player -> {
                 PlayerStateCache.clear(player);
                 JoinSignManager.giveActiveSpectatorItem(player);
             });
@@ -467,27 +535,65 @@ public class Match {
         }
     }
 
-    private void addLobbyPlayers(Set<Player> target, Collection<Player> players) {
+    private void addLobbyPlayers(Set<Player> target, Collection<Player> players, int max, List<Player> overflow) {
         if (players == null) return;
         for (Player player : players) {
-            if (player != null && player.isOnline()) target.add(player);
+            if (player == null || !player.isOnline()) continue;
+            if (target.size() < max) {
+                target.add(player);
+            } else if (overflow != null) {
+                overflow.add(player);
+            }
         }
     }
 
-    private void enableSpectatorState(Player player) {
+    private boolean enableSpectatorState(Player player) {
+        UUID playerId = player.getUniqueId();
+        if (!isSpectator(playerId) || isExiting(playerId)) return false;
+        if (!PlayerStateCache.has(player) && CubeBall.hasManagedSpectatorVisibility(player)) {
+            CubeBall.clearManagedSpectatorVisibility(player);
+        }
         if (!PlayerStateCache.has(player)) PlayerStateCache.save(player);
+        CubeBall.markManagedSpectatorVisibility(player);
         player.setAllowFlight(true);
         player.setFlying(true);
         player.setInvisible(true);
         player.setCollidable(false);
         setMatchHunger(player);
+        return true;
     }
 
     private void disableSpectatorState(Player player) {
-        player.setInvisible(false);
+        clearSpectatorVisibility(player);
         player.setFlying(false);
         player.setAllowFlight(false);
-        player.setCollidable(true);
+    }
+
+    private void clearSpectatorVisibility(Player player) {
+        CubeBall.clearManagedSpectatorVisibility(player);
+    }
+
+    private void scheduleSpectatorState(Player player, Consumer<Player> afterEnable) {
+        if (player == null) return;
+        UUID playerId = player.getUniqueId();
+        long token = spectatorStateSequence.incrementAndGet();
+        spectatorStateTokens.put(playerId, token);
+        runForPlayer(player, target -> {
+            if (!Objects.equals(spectatorStateTokens.get(playerId), token)) return;
+            if (!isSpectator(playerId) || isExiting(playerId)) {
+                spectatorStateTokens.remove(playerId, token);
+                return;
+            }
+            if (!enableSpectatorState(target)) {
+                spectatorStateTokens.remove(playerId, token);
+                return;
+            }
+            if (afterEnable != null) afterEnable.accept(target);
+        });
+    }
+
+    private void invalidateSpectatorState(UUID playerId) {
+        if (playerId != null) spectatorStateTokens.remove(playerId);
     }
 
     private void setMatchHunger(Player player) {
@@ -677,7 +783,11 @@ public class Match {
     }
 
     private void restoreAndExitPlayers() {
-        for (Player player : getAllPlayer(true)) CubeBall.reservePlayerExit(player);
+        for (Player player : getAllPlayer(true)) {
+            if (player == null) continue;
+            invalidateSpectatorState(player.getUniqueId());
+            CubeBall.reservePlayerExit(player);
+        }
         forEachPlayer(true, player -> {
             PotionEffect effect = player.getPotionEffect(PotionEffectType.SLOWNESS);
             if (effect != null && effect.getAmplifier() >= 255) player.removePotionEffect(PotionEffectType.SLOWNESS);
@@ -753,14 +863,14 @@ public class Match {
 
     public String buildTeam() {
         StringBuilder sb = new StringBuilder();
-        sb.append(I18n.format("blue_team", "count", this.blueTeam.size())).append('\n');
+        sb.append(I18n.format("blue_team", "count", this.blueTeam.size(), "max", getTeamMaxSize(Team.BLUE))).append('\n');
         this.blueTeam.forEach(player -> {
             if (player != null) {
                 sb.append("- ").append(ChatColor.BLUE).append(player.getDisplayName()).append('\n');
             }
         });
 
-        sb.append(I18n.format("red_team", "count", this.redTeam.size())).append('\n');
+        sb.append(I18n.format("red_team", "count", this.redTeam.size(), "max", getTeamMaxSize(Team.RED))).append('\n');
         this.redTeam.forEach(player -> {
             if (player != null) {
                 sb.append("- ").append(ChatColor.RED).append(player.getDisplayName()).append('\n');
@@ -1076,8 +1186,19 @@ public class Match {
         return player != null && spectatorTeam.contains(player);
     }
 
+    public boolean isSpectator(UUID playerId) {
+        if (playerId == null) return false;
+        return spectatorTeam.stream().anyMatch(player -> player != null && playerId.equals(player.getUniqueId()));
+    }
+
+    public boolean hasActiveSpectatorState(UUID playerId) {
+        return playerId != null && spectatorStateTokens.containsKey(playerId)
+                && isSpectator(playerId) && !isExiting(playerId);
+    }
+
     public boolean removeSpectator(Player player) {
         if (!isSpectator(player)) return false;
+        invalidateSpectatorState(player.getUniqueId());
         spectatorTeam.remove(player);
         CubeBall.reservePlayerExit(player);
         runForPlayer(player, CubeBall::restorePlayerAndExit);

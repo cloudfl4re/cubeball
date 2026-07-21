@@ -1,6 +1,7 @@
 package com.github.squi2rel.cb;
 
 import me.crylonz.CubeBall;
+import me.crylonz.ResidenceHook;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -48,6 +49,14 @@ public final class GoalSelectionManager {
             if (!selection.pos1.getWorld().equals(selection.pos2.getWorld())) {
                 player.sendMessage(I18n.get("menu_desc_goal_world_invalid"));
                 return true;
+            }
+            // 要求球门两个角都在领地内（领地插件不可用时跳过此限制）
+            if (ResidenceHook.isAvailable()) {
+                if (!ResidenceHook.isInAnyResidence(selection.pos1) || !ResidenceHook.isInAnyResidence(selection.pos2)) {
+                    player.sendMessage(I18n.get("setup_requires_residence"));
+                    selections.remove(player.getUniqueId());
+                    return true;
+                }
             }
             save(selection);
             selections.remove(player.getUniqueId());

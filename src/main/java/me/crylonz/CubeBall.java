@@ -22,6 +22,7 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.Transformation;
 import org.bukkit.metadata.FixedMetadataValue;
+import org.bukkit.persistence.PersistentDataType;
 import org.bukkit.plugin.Plugin;
 import org.bukkit.plugin.java.JavaPlugin;
 import org.bukkit.util.Vector;
@@ -42,6 +43,7 @@ public class CubeBall extends JavaPlugin {
     public static Map<UUID, Long> cooldown = new ConcurrentHashMap<>();
     private static final Set<String> appearanceWarnings = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, Integer> exitGenerations = new ConcurrentHashMap<>();
+    private static NamespacedKey spectatorInvisibleKey;
     private static final Material ITEM_BALL_CARRIER = Material.WHITE_WOOL;
     private static final double ROLL_DEGREES_PER_BLOCK = 120.0;
     private static final double GOALKEEPER_GOAL_RADIUS = 3.0;
@@ -106,13 +108,19 @@ public class CubeBall extends JavaPlugin {
                 + " reusableDisplay=" + describeEntity(reusableDisplay));
         Entity carrier;
         if (appearance.isItemDisplayMode()) {
-            // 优先用 CE 空白物品作载体（视觉透明），CE 不可用则回退 BARRIER + 不可见
             ItemStack carrierItem = new ItemStack(Material.BARRIER);
             if (CraftEngineHook.isAvailable()) {
                 ItemStack ceBlank = CraftEngineHook.buildCustomItemIcon("server_img_library:litesignin_air");
                 if (ceBlank != null) carrierItem = ceBlank;
             }
             final ItemStack finalCarrierItem = carrierItem;
+            // 给载体物品堆本身也设置 displayName，让以材质+名称判断的清道夫插件（如 Cyuclear 白名单模式）
+            // 能识别为"已命名"物品而跳过清理。
+            org.bukkit.inventory.meta.ItemMeta carrierMeta = finalCarrierItem.getItemMeta();
+            if (carrierMeta != null) {
+                carrierMeta.setDisplayName("§rCubeBall");
+                finalCarrierItem.setItemMeta(carrierMeta);
+            }
             Item item = Objects.requireNonNull(location.getWorld()).dropItem(location, finalCarrierItem, dropped -> {
                 dropped.setMetadata("ballID", new FixedMetadataValue(plugin, id));
                 dropped.setPickupDelay(Integer.MAX_VALUE);
@@ -125,6 +133,7 @@ public class CubeBall extends JavaPlugin {
                 dropped.setSilent(true);
                 dropped.setInvisible(true);
                 dropped.setVelocity(new Vector(0, 0, 0));
+                protectBallEntity(dropped);
             });
             carrier = item;
         } else {
@@ -132,6 +141,8 @@ public class CubeBall extends JavaPlugin {
             block.setMetadata("ballID", new FixedMetadataValue(plugin, id));
             block.setDropItem(false);
             block.setInvulnerable(true);
+            block.setHurtEntities(false);
+            protectBallEntity(block);
             carrier = block;
         }
 
@@ -139,11 +150,11 @@ public class CubeBall extends JavaPlugin {
         if (appearance.isItemDisplayMode()) {
             display = (ItemDisplay) location.getWorld().spawnEntity(location, EntityType.ITEM_DISPLAY);
             display.setItemStack(appearance.getDisplayItem());
-            // HEAD transform 使用物品的 head display 设置，避免 NONE 带来的等轴视角旋转
             display.setItemDisplayTransform(ItemDisplay.ItemDisplayTransform.HEAD);
             display.setRotation(0, 0);
             display.setInvulnerable(true);
             display.setGlowing(ballGlow);
+            protectBallEntity(display);
             carrier.addPassenger(display);
         } else {
             carrier.setGlowing(ballGlow);
@@ -153,8 +164,6 @@ public class CubeBall extends JavaPlugin {
         ball.setId(id);
         ball.setBall(carrier);
         ball.setDisplay(display);
-        // carrierBlockData 非 null 表示走 CE 方块路径，监听器用 BlockData 比较；
-        // item mode 和原版回退保持 null
         ball.setCarrierBlockData(appearance.isCustomMode() && !appearance.isItemDisplayMode() ? blockData : null);
 
         if (lastVelocity != null) {
@@ -230,6 +239,7 @@ public class CubeBall extends JavaPlugin {
 
     public void onEnable() {
         plugin = this;
+        spectatorInvisibleKey = new NamespacedKey(this, "spectator_invisible");
         FoliaScheduler.init(this);
         PlayerStateCache.init(this);
 
@@ -265,7 +275,7 @@ public class CubeBall extends JavaPlugin {
 
         for (Player player : Bukkit.getOnlinePlayers()) {
             FoliaScheduler.runEntity(player, () -> {
-                if (PlayerStateCache.has(player)) restorePlayerAndExit(player);
+                if (PlayerStateCache.has(player) || hasManagedSpectatorVisibility(player)) restorePlayerAndExit(player);
             });
         }
 
@@ -439,6 +449,31 @@ public class CubeBall extends JavaPlugin {
         if (playerId != null) exitGenerations.putIfAbsent(playerId, 0);
     }
 
+    static boolean hasManagedSpectatorVisibility(Player player) {
+        return player != null && spectatorInvisibleKey != null
+                && player.getPersistentDataContainer().has(spectatorInvisibleKey, PersistentDataType.BYTE);
+    }
+
+    static void markManagedSpectatorVisibility(Player player) {
+        if (player == null || spectatorInvisibleKey == null) return;
+        player.getPersistentDataContainer().set(spectatorInvisibleKey, PersistentDataType.BYTE, (byte) 1);
+    }
+
+    static void clearManagedSpectatorVisibility(Player player) {
+        if (player == null) return;
+        player.setInvisible(false);
+        player.setCollidable(true);
+        if (spectatorInvisibleKey != null) {
+            player.getPersistentDataContainer().remove(spectatorInvisibleKey);
+        }
+    }
+
+    private static void clearManagedSpectatorMarker(Player player) {
+        if (player != null && spectatorInvisibleKey != null) {
+            player.getPersistentDataContainer().remove(spectatorInvisibleKey);
+        }
+    }
+
     private static void teleportForExit(Player player, Location spawn, int retries, int exitToken) {
         try {
             player.teleportAsync(spawn).whenComplete((success, error) -> {
@@ -464,7 +499,9 @@ public class CubeBall extends JavaPlugin {
         player.setInvisible(false);
         player.setFlying(false);
         player.setAllowFlight(false);
+        player.setCollidable(true);
         PlayerStateCache.restore(player);
+        clearManagedSpectatorMarker(player);
         exitGenerations.remove(playerId, exitToken);
     }
 
@@ -581,9 +618,9 @@ public class CubeBall extends JavaPlugin {
         ball.setTicksLived(1);
 
         Match match = matches.get(ballData.getId());
-        boolean itemMode = ballData.getDisplay() != null;
-        double directKickDistance = itemMode ? 1.75 : 1.0;
-        double alignedKickDistance = itemMode ? 3.0 : 2.5;
+        boolean displayMode = ballData.getDisplay() != null;
+        double directKickDistance = displayMode ? 1.75 : 1.0;
+        double alignedKickDistance = displayMode ? 3.0 : 2.5;
 
         Player kicker = null;
         double nearestDistanceSquared = Double.MAX_VALUE;
@@ -610,7 +647,7 @@ public class CubeBall extends JavaPlugin {
             double distance = Math.sqrt(nearestDistanceSquared);
             Vector velocity = getVector(kicker, ballData);
             debug("kick id=" + id
-                    + " mode=" + (itemMode ? "item" : "block")
+                    + " mode=" + (displayMode ? "item" : "block")
                     + " player=" + kicker.getName()
                     + " distance=" + String.format(Locale.ROOT, "%.2f", distance)
                     + " velocity=" + formatVector(velocity)
@@ -623,7 +660,7 @@ public class CubeBall extends JavaPlugin {
             if (match != null) match.setLastTouchPlayer(ball, kicker);
         }
 
-        if (ballData.getDisplay() != null && ball.isOnGround() && ballData.getPlayerCollisionTick() > 3) {
+        if (displayMode && ball.isOnGround() && ballData.getPlayerCollisionTick() > 3) {
             Vector velocity = ball.getVelocity();
             double zVelocity = abs(velocity.getZ()) / 1.5;
             double xVelocity = abs(velocity.getX()) / 1.5;
@@ -635,14 +672,12 @@ public class CubeBall extends JavaPlugin {
                 velocity.setY(yVelocity);
                 ball.setVelocity(velocity);
                 ball.setGravity(true);
-                // 只在落地瞬间（上一tick不在地面）播放声音，避免每tick重复播放
                 if (!ballData.isWasOnGround()) {
                     ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
                 }
             }
         }
 
-        //compute bouncing on other blocks
         if (ballData.getPlayerCollisionTick() > 3) {
 
             boolean zBouncing = abs(ballData.getLastVelocity().getZ()) - abs(ball.getVelocity().getZ()) > 0.2 && ball.getVelocity().getZ() == 0;
@@ -672,7 +707,7 @@ public class CubeBall extends JavaPlugin {
 
         if (balls.get(id) != ballData) return;
 
-        if (itemMode) {
+        if (displayMode) {
             tickDisplayRoll(ballData);
         }
 
@@ -692,6 +727,13 @@ public class CubeBall extends JavaPlugin {
             return match.getData().isNearRedTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
         }
         return false;
+    }
+
+    private static void protectBallEntity(Entity entity) {
+        if (entity == null) return;
+        entity.setCustomName("CubeBall");
+        entity.setCustomNameVisible(false);
+        entity.setPersistent(true);
     }
 
     private static void tickDisplayRoll(Ball ballData) {
@@ -725,10 +767,16 @@ public class CubeBall extends JavaPlugin {
         double xzMul = 1;
         Vector direction = player.getLocation().getDirection();
         double lookY = Math.max(0.0, Math.min(0.9, direction.getY()));
+        double playerUp = Math.max(0.0, player.getVelocity().getY());
+        boolean jumpSneak = false;
 
         if (player.isSneaking()) {
-            yVelocity = 0.3 + lookY * 0.8;
-            xzMul = 3.5;
+            yVelocity = 0.12 + lookY * 0.25;
+            xzMul = 2.8;
+            jumpSneak = playerUp > 0.08 || !player.isOnGround();
+            if (jumpSneak) {
+                yVelocity += 0.30;
+            }
         } else if (player.isSprinting()) {
             yVelocity = 0.25;
         }
@@ -738,17 +786,11 @@ public class CubeBall extends JavaPlugin {
 
         Vector currentVelocity = ballData.getBall().getVelocity().clone();
         Vector velocity = currentVelocity.clone();
-        if (player.isSneaking()) {
-            velocity.setY(yVelocity);
-            velocity.setX((horizontalDirection.getX() / 2) * xzMul);
-            velocity.setZ((horizontalDirection.getZ() / 2) * xzMul);
-        } else {
-            velocity.setY(currentVelocity.getY() + yVelocity + player.getVelocity().getY() / 2);
-            velocity.setX(currentVelocity.getX() + (horizontalDirection.getX() / 2) * xzMul);
-            velocity.setZ(currentVelocity.getZ() + (horizontalDirection.getZ() / 2) * xzMul);
-        }
+        double upBoost = jumpSneak ? 0.0 : playerUp / 2.0;
+        velocity.setY(currentVelocity.getY() + yVelocity + upBoost);
+        velocity.setX(currentVelocity.getX() + (horizontalDirection.getX() / 2.0) * xzMul);
+        velocity.setZ(currentVelocity.getZ() + (horizontalDirection.getZ() / 2.0) * xzMul);
 
-        // if player is not moving, create bouncing on it
         if (!player.isSneaking()
                 && player.getVelocity().lengthSquared() < 0.000001) {
             velocity.setY(0);
@@ -758,5 +800,4 @@ public class CubeBall extends JavaPlugin {
         return velocity;
     }
 }
-
 

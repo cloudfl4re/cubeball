@@ -14,9 +14,9 @@ public class Ball {
     private Vector lastVelocity;
     private int playerCollisionTick;
     private ScheduledTask physicsTask;
-    /** CE 物品模式下挂载的显示实体；非 null 时由 tickBall 跟随物理载体位置。 */
+    /** CE 物品模式下挂载的 ItemDisplay；物理载体为 Item。 */
     private Display display;
-    /** 落地判断用的载体 BlockData；仅 CE 模式设置，纯原版保持 null（监听器走原 Material 分支）。 */
+    /** 落地判断用的载体 BlockData；仅 CE 方块模式设置，纯原版/物品模式保持 null。 */
     private BlockData carrierBlockData;
     /** 上一 tick 是否在地面；用于检测落地瞬间（off→on），避免落地声连续播放。 */
     private boolean wasOnGround;

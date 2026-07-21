@@ -112,6 +112,27 @@ public final class ResidenceHook {
         return method;
     }
 
+    /**
+     * 检查坐标是否在任意领地内（不要求特定领地名称）。
+     * 仅用于设置场地坐标时的前置检查，不涉及玩家权限。
+     *
+     * @return true=在某个领地内；false=不在任何领地内；领地插件不可用时返回 false（不阻止设置）
+     */
+    public static boolean isInAnyResidence(Location location) {
+        if (location == null) return false;
+        if (!initialized) init();
+        if (!available || residenceManager == null || getByLocation == null) return false;
+        try {
+            Object residence = getByLocation.invoke(residenceManager, location);
+            return residence != null;
+        } catch (ReflectiveOperationException | RuntimeException | LinkageError ignored) {
+            return false;
+        }
+    }
+
+    /**
+     * 领地插件是否已成功加载（可用于前置检查：不可用时跳过领地限制）。
+     */
     public static String getFailure() {
         return failure;
     }

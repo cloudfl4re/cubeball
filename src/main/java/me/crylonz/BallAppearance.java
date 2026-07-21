@@ -4,9 +4,9 @@ import org.bukkit.block.data.BlockData;
 import org.bukkit.inventory.ItemStack;
 
 /**
- * 解析后的足球外观。carrierBlockData 是 FallingBlock 的物理载体方块；
- * displayItem 非 null 时需要额外生成 ItemDisplay 显示该物品（CE 物品模式）。
- * customMode 为 true 表示走 CE 路径（方块或物品模式），监听器据此用 BlockData 比较；
+ * 解析后的足球外观。carrierBlockData 是物理载体方块数据；
+ * displayItem 非 null 时为 CE 物品模式：Item 载体 + ItemDisplay 外观；
+ * customMode 为 true 表示走 CE 路径，监听器据此用 BlockData 比较；
  * 否则是原版回退，监听器走原 Material 比较分支。
  * 仅持有 Bukkit 类型，可被任意类安全引用，不触发 CraftEngine 类加载。
  */

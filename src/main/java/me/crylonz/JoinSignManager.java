@@ -97,6 +97,16 @@ public final class JoinSignManager {
         synchronized (lobby) {
             LobbyEntry entry = lobby.players.get(player.getUniqueId());
             if (entry == null) return true;
+            if ((choice == Choice.RED || choice == Choice.BLUE) && entry.choice != choice) {
+                Team team = choice == Choice.RED ? Team.RED : Team.BLUE;
+                int max = match.getTeamMaxSize(team);
+                if (countChoice(lobby, choice) >= max) {
+                    sendPlayerMessage(player, I18n.format("team_full",
+                            "team", I18n.get(team == Team.RED ? "red_name" : "blue_name"),
+                            "max", max));
+                    return true;
+                }
+            }
             entry.choice = choice;
         }
 
@@ -191,7 +201,7 @@ public final class JoinSignManager {
         playerLobby.clear();
     }
 
-    private static void join(Player player, String matchName) {
+    public static void join(Player player, String matchName) {
         if (matchName == null || matchName.isBlank()) {
             sendPlayerMessage(player, I18n.get("lobby_match_not_found"));
             return;
@@ -383,6 +393,10 @@ public final class JoinSignManager {
     }
 
     private static Assignment buildAssignment(Lobby lobby) {
+        Match match = CubeBall.matches.get(lobby.matchName);
+        int redMax = match == null ? Integer.MAX_VALUE : match.getTeamMaxSize(Team.RED);
+        int blueMax = match == null ? Integer.MAX_VALUE : match.getTeamMaxSize(Team.BLUE);
+
         List<Player> participants = new ArrayList<>();
         List<Player> spectators = new ArrayList<>();
         Map<Choice, List<Player>> choices = new EnumMap<>(Choice.class);
@@ -409,24 +423,47 @@ public final class JoinSignManager {
             sendPlayerMessage(moved, I18n.get("lobby_odd_spectator"));
         }
 
-        int target = participants.size() / 2;
+        int balanceTarget = participants.size() / 2;
+        int redTarget = Math.min(balanceTarget, redMax);
+        int blueTarget = Math.min(balanceTarget, blueMax);
         List<Player> red = new ArrayList<>();
         List<Player> blue = new ArrayList<>();
         List<Player> pool = new ArrayList<>();
-        fillPreferred(red, pool, choices.get(Choice.RED), target);
-        fillPreferred(blue, pool, choices.get(Choice.BLUE), target);
+        fillPreferred(red, pool, choices.get(Choice.RED), redTarget);
+        fillPreferred(blue, pool, choices.get(Choice.BLUE), blueTarget);
         pool.addAll(choices.get(Choice.NONE));
         Collections.shuffle(pool);
 
         for (Player player : pool) {
-            if (red.size() < target) {
+            if (red.size() < redTarget) {
                 red.add(player);
-            } else if (blue.size() < target) {
+            } else if (blue.size() < blueTarget) {
                 blue.add(player);
+            } else if (red.size() < redMax) {
+                red.add(player);
+            } else if (blue.size() < blueMax) {
+                blue.add(player);
+            } else {
+                spectators.add(player);
+                Team fullTeam = redMax <= blueMax ? Team.RED : Team.BLUE;
+                sendPlayerMessage(player, I18n.format("team_full",
+                        "team", I18n.get(fullTeam == Team.RED ? "red_name" : "blue_name"),
+                        "max", Math.min(redMax, blueMax)));
             }
         }
 
         return new Assignment(red, blue, spectators);
+    }
+
+    private static int countChoice(Lobby lobby, Choice choice) {
+        int count = 0;
+        for (LobbyEntry entry : lobby.players.values()) {
+            if (entry.choice == choice) {
+                Player player = Bukkit.getPlayer(entry.playerId);
+                if (player != null && player.isOnline()) count++;
+            }
+        }
+        return count;
     }
 
     private static void fillPreferred(List<Player> target, List<Player> overflow, List<Player> players, int max) {

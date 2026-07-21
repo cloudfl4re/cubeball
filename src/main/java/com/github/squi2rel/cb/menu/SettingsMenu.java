@@ -11,6 +11,7 @@ import me.crylonz.CraftEngineHook;
 import me.crylonz.CubeBall;
 import me.crylonz.Match;
 import me.crylonz.MatchState;
+import me.crylonz.ResidenceHook;
 import org.bukkit.ChatColor;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -38,6 +39,7 @@ public class SettingsMenu {
             p.sendMessage(I18n.get("match_removed"));
         });
         builder.setSlot(1, 1, RED_WOOL, I18n.get("menu_desc_redspawn"), I18n.format("menu_desc_addspawn_desc", "c", c.redTeamSpawns.size())).setAction((p, v) -> {
+            if (!checkResidence(p)) return;
             if (c.redTeamSpawns.size() > 20) builder.refresh();
             c.redTeamSpawns.add(entityToBlock(p.getLocation()));
             builder.refresh();
@@ -49,6 +51,7 @@ public class SettingsMenu {
             builder.refresh();
         });
         builder.setSlot(3, 1, BLUE_WOOL, I18n.get("menu_desc_bluespawn"), I18n.format("menu_desc_addspawn_desc", "c", c.blueTeamSpawns.size())).setAction((p, v) -> {
+            if (!checkResidence(p)) return;
             if (c.blueTeamSpawns.size() > 20) builder.refresh();
             c.blueTeamSpawns.add(entityToBlock(p.getLocation()));
             builder.refresh();
@@ -87,6 +90,7 @@ public class SettingsMenu {
         });
         Location bs = c.ballSpawn;
         builder.setSlot(5, 1, EMERALD_BLOCK, I18n.get("menu_desc_ballspawn"), bs == null ? null : I18n.format("menu_desc_ballspawn_desc", "x", bs.getBlockX(), "y", bs.getBlockY() - 2, "z", bs.getBlockZ())).setAction((p, v) -> {
+            if (!checkResidence(p)) return;
             c.ballSpawn = entityToBlock(p.getLocation().add(0, 2, 0));
             builder.refresh();
         });
@@ -375,6 +379,17 @@ public class SettingsMenu {
 
     private static Material getState(MatchState state) {
         return state == MatchState.CREATED ? GRAY_CONCRETE : state == MatchState.READY ? YELLOW_CONCRETE : LIME_CONCRETE;
+    }
+
+    /**
+     * 检查玩家所在位置是否在领地内；不在时发消息并返回 false。
+     * 若领地插件未安装则放行（返回 true），避免无领地环境无法使用。
+     */
+    private static boolean checkResidence(Player player) {
+        if (!ResidenceHook.isAvailable()) return true; // 领地插件未安装，不做限制
+        if (ResidenceHook.isInAnyResidence(player.getLocation())) return true;
+        player.sendMessage(I18n.get("setup_requires_residence"));
+        return false;
     }
 
     private static Location entityToBlock(Location l) {

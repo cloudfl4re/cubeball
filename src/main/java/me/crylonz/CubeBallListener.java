@@ -14,6 +14,7 @@ import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.event.entity.EntityChangeBlockEvent;
 import org.bukkit.event.entity.EntityExhaustionEvent;
+import org.bukkit.event.entity.EntityPickupItemEvent;
 import org.bukkit.event.entity.FoodLevelChangeEvent;
 import org.bukkit.event.inventory.InventoryClickEvent;
 import org.bukkit.event.inventory.InventoryDragEvent;
@@ -34,6 +35,7 @@ import org.bukkit.metadata.MetadataValue;
 import org.bukkit.util.Vector;
 
 import java.util.Locale;
+import java.util.UUID;
 
 import static java.lang.Double.max;
 import static java.lang.Double.min;
@@ -116,17 +118,24 @@ public class CubeBallListener implements Listener {
     @EventHandler
     public static void onPlayerJoin(PlayerJoinEvent e) {
         Player player = e.getPlayer();
+        UUID playerId = player.getUniqueId();
         boolean activeMatch = false;
         for (Match match : matches.values()) {
             match.replacePlayer(player);
-            if (match.isInProgress() && match.hasPlayer(player)) activeMatch = true;
+            if ((match.isInProgress() && match.hasPlayer(player)) || match.hasActiveSpectatorState(playerId)) {
+                activeMatch = true;
+            }
         }
-        if (!activeMatch && (PlayerStateCache.has(player) || isExiting(player.getUniqueId()))) restorePlayerAndExit(player);
+        if (!activeMatch && (PlayerStateCache.has(player) || isExiting(playerId) || hasManagedSpectatorVisibility(player))) {
+            restorePlayerAndExit(player);
+        }
         FoliaScheduler.runEntityLater(player, () -> {
             for (Match match : matches.values()) {
-                if (match.isInProgress() && match.hasPlayer(player)) return;
+                if ((match.isInProgress() && match.hasPlayer(player)) || match.hasActiveSpectatorState(playerId)) return;
             }
-            if (PlayerStateCache.has(player) || isExiting(player.getUniqueId())) restorePlayerAndExit(player);
+            if (PlayerStateCache.has(player) || isExiting(playerId) || hasManagedSpectatorVisibility(player)) {
+                restorePlayerAndExit(player);
+            }
         }, 1L);
         ResidenceBossBar.refreshLater(player);
     }
@@ -256,8 +265,30 @@ public class CubeBallListener implements Listener {
 
     @EventHandler
     public static void onDropItem(PlayerDropItemEvent event) {
+        Player player = event.getPlayer();
+        // 比赛中的参赛玩家不能丢弃任何物品，防止游戏结束后物品丢失
         if (Match.isTeamKit(event.getItemDrop().getItemStack()) || JoinSignManager.isSelectorItem(event.getItemDrop().getItemStack())) {
             event.setCancelled(true);
+            return;
+        }
+        for (Match match : matches.values()) {
+            if (match.isInProgress() && match.containsPlayer(player)) {
+                event.setCancelled(true);
+                return;
+            }
+        }
+    }
+
+    @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
+    public static void onPickupItem(EntityPickupItemEvent event) {
+        if (!(event.getEntity() instanceof Player player)) return;
+        // 足球载体的 pickupDelay 已设为 MAX_VALUE，正常不会到达此处；
+        // 这里额外拦截：参赛玩家比赛中不能捡任何物品
+        for (Match match : matches.values()) {
+            if (match.isInProgress() && match.containsPlayer(player)) {
+                event.setCancelled(true);
+                return;
+            }
         }
     }
 

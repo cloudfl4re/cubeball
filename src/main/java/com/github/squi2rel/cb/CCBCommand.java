@@ -5,6 +5,7 @@ import com.github.squi2rel.cb.menu.builder.MenuManager;
 import com.github.squi2rel.cb.util.FoliaScheduler;
 import me.crylonz.CubeBall;
 import me.crylonz.CraftEngineHook;
+import me.crylonz.JoinSignManager;
 import me.crylonz.Match;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
@@ -253,6 +254,14 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             sender.sendMessage(I18n.get("exit_spawn_set"));
             return true;
         }
+        if (args.length > 0 && args[0].equalsIgnoreCase("join")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage("[CCB] This command can only be used by a player.");
+                return true;
+            }
+            handleJoin(player, args);
+            return true;
+        }
         if (!(sender instanceof Player)) return true;
         if (!sender.hasPermission("cubeball.manage")) {
             sender.sendMessage(I18n.get("command_no_permission"));
@@ -261,6 +270,29 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
         Player player = (Player) sender;
         SettingsMenu.settings.sendTo(player);
         return true;
+    }
+
+    private void handleJoin(Player player, String[] args) {
+        if (args.length >= 2) {
+            String matchName = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
+            JoinSignManager.join(player, matchName);
+            return;
+        }
+        List<String> names = new ArrayList<>(CubeBall.matches.keySet());
+        if (names.isEmpty()) {
+            player.sendMessage(I18n.get("join_no_matches"));
+            return;
+        }
+        if (names.size() == 1) {
+            JoinSignManager.join(player, names.get(0));
+            return;
+        }
+        names.sort(String.CASE_INSENSITIVE_ORDER);
+        player.sendMessage(I18n.get("join_list_header"));
+        for (String name : names) {
+            player.sendMessage(I18n.format("join_list_entry", "match", name));
+        }
+        player.sendMessage(I18n.get("join_usage"));
     }
 
     private boolean parseToggle(String value, boolean fallback) {
@@ -347,6 +379,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
         if (args.length == 1) {
             ArrayList<String> values = new ArrayList<>();
+            values.add("join");
             if (sender.hasPermission("cubeball.timeout")
                     && sender instanceof Player player
                     && (findActivePlayerMatch(player) != null || findPauseVoteMatch(player) != null)) values.add("votepause");
@@ -356,6 +389,9 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             return filter(args[0], values);
         }
         if (args.length == 2) {
+            if (args[0].equalsIgnoreCase("join") && sender instanceof Player) {
+                return filter(args[1], new ArrayList<>(CubeBall.matches.keySet()));
+            }
             if ((args[0].equalsIgnoreCase("debug") || args[0].equalsIgnoreCase("glow"))
                     && sender.hasPermission("cubeball.admin")) {
                 return filter(args[1], List.of("on", "off"));
