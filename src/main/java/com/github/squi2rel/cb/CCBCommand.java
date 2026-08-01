@@ -21,6 +21,24 @@ import java.util.List;
 public class CCBCommand implements CommandExecutor, TabCompleter {
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
+        if (args.length > 0 && args[0].equalsIgnoreCase("help")) {
+            sendHelp(sender);
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
+            if (!sender.hasPermission("cubeball.admin")) {
+                sendCommandMessage(sender, I18n.get("command_no_permission"));
+                return true;
+            }
+            boolean started = CubeBall.reloadRuntimeSettings(
+                    () -> sendCommandMessage(sender, I18n.get("reload_success")),
+                    error -> {
+                        CubeBall.plugin.getLogger().log(java.util.logging.Level.SEVERE, "Failed to reload CubeBall configuration", error);
+                        sendCommandMessage(sender, I18n.get("reload_failed"));
+                    });
+            sendCommandMessage(sender, I18n.get(started ? "reload_started" : "reload_running"));
+            return true;
+        }
         if (args.length > 0 && args[0].equalsIgnoreCase("debug")) {
             if (!sender.hasPermission("cubeball.admin")) {
                 sender.sendMessage("You do not have permission to do this!");
@@ -109,7 +127,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             String id = CraftEngineHook.getCustomItemId(hand);
             match.getData().ballCustomId = id;
             match.getData().ballCustomItem = snapshot;
-            CubeBall.save();
+            CubeBall.saveAsync();
             CubeBall.debug("command setballhand match=" + match.getName()
                     + " id=" + id
                     + " item=" + CubeBall.describeItem(snapshot));
@@ -136,7 +154,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             if (id.equalsIgnoreCase("clear") || id.equalsIgnoreCase("none") || id.equalsIgnoreCase("off")) {
                 match.getData().ballCustomId = null;
                 match.getData().ballCustomItem = null;
-                CubeBall.save();
+                CubeBall.saveAsync();
                 CubeBall.debug("command setballce cleared match=" + match.getName());
                 sender.sendMessage("[CCB] CraftEngine ball cleared for " + match.getName());
                 return true;
@@ -159,7 +177,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
 
             match.getData().ballCustomId = id;
             match.getData().ballCustomItem = null;
-            CubeBall.save();
+            CubeBall.saveAsync();
             CubeBall.debug("command setballce match=" + match.getName()
                     + " id=" + id
                     + " found=" + found
@@ -268,7 +286,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         Player player = (Player) sender;
-        SettingsMenu.settings.sendTo(player);
+        SettingsMenu.open(player);
         return true;
     }
 
@@ -354,6 +372,10 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             }
             return match;
         }
+        if (sender instanceof Player player) {
+            Match playerMatch = findActivePlayerMatch(player);
+            if (playerMatch != null) return playerMatch;
+        }
         Match found = null;
         for (Match match : CubeBall.matches.values()) {
             if (!match.isInProgress()) continue;
@@ -375,16 +397,31 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void sendHelp(CommandSender sender) {
+        sendCommandMessage(sender, I18n.get("help_header"));
+        sendCommandMessage(sender, I18n.get("help_open"));
+        sendCommandMessage(sender, I18n.get("help_join"));
+        if (sender.hasPermission("cubeball.timeout")) sendCommandMessage(sender, I18n.get("help_timeout"));
+        if (sender.hasPermission("cubeball.admin")) {
+            sendCommandMessage(sender, I18n.get("help_admin_spawn"));
+            sendCommandMessage(sender, I18n.get("help_admin_match"));
+            sendCommandMessage(sender, I18n.get("help_admin_visual"));
+            sendCommandMessage(sender, I18n.get("help_admin_reload"));
+        }
+        sendCommandMessage(sender, I18n.get("help_footer"));
+    }
+
     @Override
     public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
         if (args.length == 1) {
             ArrayList<String> values = new ArrayList<>();
+            values.add("help");
             values.add("join");
             if (sender.hasPermission("cubeball.timeout")
                     && sender instanceof Player player
                     && (findActivePlayerMatch(player) != null || findPauseVoteMatch(player) != null)) values.add("votepause");
             if (sender.hasPermission("cubeball.admin")) {
-                values.addAll(List.of("debug", "glow", "roll", "redteam", "blueteam", "setballhand", "setballce", "spawn", "exitspawn", "pause", "resume", "end"));
+                values.addAll(List.of("reload", "debug", "glow", "roll", "redteam", "blueteam", "setballhand", "setballce", "spawn", "exitspawn", "pause", "resume", "end"));
             }
             return filter(args[0], values);
         }

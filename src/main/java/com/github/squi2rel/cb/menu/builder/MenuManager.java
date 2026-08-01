@@ -1,6 +1,7 @@
 package com.github.squi2rel.cb.menu.builder;
 
 import com.github.squi2rel.cb.util.FoliaScheduler;
+import me.crylonz.VisualEffects;
 import org.bukkit.Bukkit;
 import org.bukkit.entity.Player;
 import org.bukkit.event.EventHandler;
@@ -11,7 +12,6 @@ import org.bukkit.event.player.AsyncPlayerChatEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
 import org.bukkit.plugin.Plugin;
 
-import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
@@ -21,10 +21,7 @@ public class MenuManager implements Listener {
     private static final Map<UUID, MenuContainer<?>> menus = new ConcurrentHashMap<>();
     private static final Map<UUID, Consumer<String>> handlers = new ConcurrentHashMap<>();
 
-    private final Plugin plugin;
-
-    private MenuManager(Plugin plugin) {
-        this.plugin = plugin;
+    private MenuManager() {
     }
 
     public static <T> void registerMenu(Player player, MenuContext<T> menu, T argument) {
@@ -36,7 +33,8 @@ public class MenuManager implements Listener {
     }
 
     public static void updateArgument(Player player, Object argument) {
-        menus.get(player.getUniqueId()).setArgument(argument);
+        MenuContainer<?> container = menus.get(player.getUniqueId());
+        if (container != null) container.setArgument(argument);
     }
 
     public static void openMenu(Player player, Runnable defaultMenuRunner) {
@@ -54,10 +52,12 @@ public class MenuManager implements Listener {
             if (player == null) continue;
             FoliaScheduler.runEntity(player, player::closeInventory);
         }
+        handlers.clear();
+        menus.clear();
     }
 
     public static void init(Plugin plugin) {
-        plugin.getServer().getPluginManager().registerEvents(new MenuManager(plugin), plugin);
+        plugin.getServer().getPluginManager().registerEvents(new MenuManager(), plugin);
     }
 
     @EventHandler
@@ -69,10 +69,14 @@ public class MenuManager implements Listener {
 
     @EventHandler
     public void onInventoryClick(InventoryClickEvent event) {
-        Player player = (Player) event.getWhoClicked();
+        if (!(event.getWhoClicked() instanceof Player player)) return;
         MenuContainer<?> container = menus.get(player.getUniqueId());
         if (container == null || container.isClosed) return;
         event.setCancelled(true);
+        if (event.getRawSlot() >= 0 && event.getRawSlot() < event.getView().getTopInventory().getSize()
+                && event.getCurrentItem() != null && !event.getCurrentItem().getType().isAir()) {
+            VisualEffects.menuClick(player);
+        }
         container.context.handleClick(player, event.getRawSlot(), event.getHotbarButton(), container.argument, event.getClick());
     }
 

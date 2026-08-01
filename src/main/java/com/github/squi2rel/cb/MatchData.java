@@ -8,10 +8,10 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.BoundingBox;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class MatchData {
     public String creator;
@@ -32,10 +32,10 @@ public class MatchData {
     public Location redTeamGoalPos1;
     public Location redTeamGoalPos2;
 
-    public List<Location> blueTeamGoalBlocks = new ArrayList<>();
-    public List<Location> redTeamGoalBlocks = new ArrayList<>();
-    public List<Location> blueTeamSpawns = new ArrayList<>();
-    public List<Location> redTeamSpawns = new ArrayList<>();
+    public List<Location> blueTeamGoalBlocks = new CopyOnWriteArrayList<>();
+    public List<Location> redTeamGoalBlocks = new CopyOnWriteArrayList<>();
+    public List<Location> blueTeamSpawns = new CopyOnWriteArrayList<>();
+    public List<Location> redTeamSpawns = new CopyOnWriteArrayList<>();
 
     public void write(ConfigurationSection config) {
         config.set("creator", creator);
@@ -258,8 +258,8 @@ public class MatchData {
     }
 
     @SuppressWarnings("unchecked")
-    public static ArrayList<Location> getLocations(ConfigurationSection config, String path) {
+    public static List<Location> getLocations(ConfigurationSection config, String path) {
         List<Location> list = (List<Location>) config.getList(path);
-        return list == null ? new ArrayList<>() : new ArrayList<>(list);
+        return list == null ? new CopyOnWriteArrayList<>() : new CopyOnWriteArrayList<>(list);
     }
 }

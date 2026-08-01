@@ -23,9 +23,7 @@ public class MenuBuilder<T> extends MenuBuilderBase {
     }
 
     public StaticMenuContext<T> build() {
-        Inventory inventory = Bukkit.createInventory(null, row * 9, title);
-        for (int i = 0; i < items.size(); i++) setMenuItem(items.get(i), inventory, i);
-        return new StaticMenuContext<>(inventory, items, autoClose);
+        return new StaticMenuContext<>(title, row, items, autoClose);
     }
 
     public MenuItem<T> setSlot(int column, int row, Material item, String name, String desc) {
@@ -41,11 +39,13 @@ public class MenuBuilder<T> extends MenuBuilderBase {
     }
 
     public static class StaticMenuContext<T> extends MenuContext<T> {
-        private final Inventory inventory;
+        private final String title;
+        private final int rows;
         private final List<MenuItem<T>> items;
 
-        public StaticMenuContext(Inventory inventory, List<MenuItem<T>> items, boolean autoClose) {
-            this.inventory = inventory;
+        public StaticMenuContext(String title, int rows, List<MenuItem<T>> items, boolean autoClose) {
+            this.title = title;
+            this.rows = rows;
             this.items = items;
             this.autoClose = autoClose;
         }
@@ -62,6 +62,8 @@ public class MenuBuilder<T> extends MenuBuilderBase {
         }
 
         public void sendTo(Player player, T argument) {
+            Inventory inventory = Bukkit.createInventory(null, rows * 9, title);
+            for (int i = 0; i < items.size(); i++) setMenuItem(items.get(i), inventory, i);
             player.openInventory(inventory);
             MenuManager.registerMenu(player, this, argument);
         }

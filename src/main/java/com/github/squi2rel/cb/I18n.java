@@ -12,7 +12,7 @@ import java.nio.file.Files;
 import java.nio.file.StandardCopyOption;
 
 public class I18n {
-    private static YamlConfiguration messages;
+    private static volatile YamlConfiguration messages;
 
     public static void init(Plugin plugin, String language) {
         String resourceName = "messages." + language + ".yml";

@@ -2,7 +2,10 @@ package me.crylonz;
 
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.util.FoliaScheduler;
-import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import com.github.squi2rel.cb.util.TaskHandle;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
@@ -29,6 +32,7 @@ import java.util.Locale;
 import java.util.Map;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class JoinSignManager {
     private static final String SIGN_HEADER = "[CubeBall]";
@@ -113,12 +117,15 @@ public final class JoinSignManager {
         if (choice == Choice.RED) {
             match.applyTeamKit(player, Team.RED);
             sendPlayerMessage(player, I18n.get("lobby_selected_red"));
+            VisualEffects.lobbyChoice(player, Team.RED);
         } else if (choice == Choice.BLUE) {
             match.applyTeamKit(player, Team.BLUE);
             sendPlayerMessage(player, I18n.get("lobby_selected_blue"));
+            VisualEffects.lobbyChoice(player, Team.BLUE);
         } else {
             match.applyTeamKit(player, Team.SPECTATOR);
             sendPlayerMessage(player, I18n.get("lobby_selected_spectator"));
+            VisualEffects.lobbyChoice(player, Team.SPECTATOR);
         }
 
         evaluateCountdown(lobby);
@@ -257,6 +264,7 @@ public final class JoinSignManager {
         Location lobbySpawn = CubeBall.getLobbySpawn();
         if (lobbySpawn != null) player.teleportAsync(lobbySpawn);
         giveLobbyItems(player, getChoice(player));
+        VisualEffects.lobbyJoin(player);
         sendPlayerMessage(player, I18n.format("lobby_joined", "match", match.getName()));
         sendPlayerMessage(player, I18n.get("lobby_waiting_state_locked"));
 
@@ -289,10 +297,10 @@ public final class JoinSignManager {
         PlayerStateCache.clear(player);
         lockWaitingState(player);
         PlayerInventory inventory = player.getInventory();
-        inventory.setItem(0, selector(Material.RED_WOOL, Choice.RED, I18n.get("lobby_selector_red")));
-        inventory.setItem(1, selector(Material.BLUE_WOOL, Choice.BLUE, I18n.get("lobby_selector_blue")));
-        inventory.setItem(2, selector(Material.WHITE_WOOL, Choice.SPECTATOR, I18n.get("lobby_selector_spectator")));
-        inventory.setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave")));
+        inventory.setItem(0, selector(Material.RED_WOOL, Choice.RED, I18n.get("lobby_selector_red"), choice == Choice.RED));
+        inventory.setItem(1, selector(Material.BLUE_WOOL, Choice.BLUE, I18n.get("lobby_selector_blue"), choice == Choice.BLUE));
+        inventory.setItem(2, selector(Material.WHITE_WOOL, Choice.SPECTATOR, I18n.get("lobby_selector_spectator"), choice == Choice.SPECTATOR));
+        inventory.setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave"), false));
 
         Match match = currentMatch(player);
         if (match != null) {
@@ -320,15 +328,24 @@ public final class JoinSignManager {
     }
 
     static void giveActiveSpectatorItem(Player player) {
-        player.getInventory().setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave")));
+        player.getInventory().setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave"), false));
         player.updateInventory();
     }
 
-    private static ItemStack selector(Material material, Choice choice, String name) {
+    private static ItemStack selector(Material material, Choice choice, String name, boolean selected) {
         ItemStack item = new ItemStack(material);
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            meta.setDisplayName(name);
+            String color = choice == Choice.RED ? "§c" : choice == Choice.BLUE ? "§9"
+                    : choice == Choice.SPECTATOR ? "§f" : "§c";
+            Component title = LegacyComponentSerializer.legacySection().deserialize(color + name)
+                    .decoration(TextDecoration.ITALIC, false);
+            Component lore = LegacyComponentSerializer.legacySection().deserialize(
+                            selected ? "§a当前已选择" : choice == Choice.LEAVE ? "§7右键退出" : "§e右键选择")
+                    .decoration(TextDecoration.ITALIC, false);
+            meta.displayName(title);
+            meta.lore(List.of(lore));
+            meta.setEnchantmentGlintOverride(selected);
             meta.getPersistentDataContainer().set(selectorKey(), PersistentDataType.STRING, choice.name());
             item.setItemMeta(meta);
         }
@@ -524,7 +541,7 @@ public final class JoinSignManager {
             lobby.countdownTask = null;
             lobby.countdownEndsAtMillis = 0L;
         }
-        for (ScheduledTask task : lobby.countdownTitleTasks) {
+        for (TaskHandle task : lobby.countdownTitleTasks) {
             task.cancel();
         }
         lobby.countdownTitleTasks.clear();
@@ -551,7 +568,10 @@ public final class JoinSignManager {
         for (UUID uuid : lobby.players.keySet()) {
             Player player = Bukkit.getPlayer(uuid);
             if (player != null && player.isOnline()) {
-                FoliaScheduler.runEntity(player, () -> player.sendTitle("§e" + seconds, "", 0, 20, 0));
+                FoliaScheduler.runEntity(player, () -> {
+                    player.sendTitle("§e" + seconds, "", 0, 20, 0);
+                    VisualEffects.countdown(player, seconds);
+                });
             }
         }
     }
@@ -585,8 +605,8 @@ public final class JoinSignManager {
     private static final class Lobby {
         private final String matchName;
         private final Map<UUID, LobbyEntry> players = new ConcurrentHashMap<>();
-        private final List<ScheduledTask> countdownTitleTasks = new ArrayList<>();
-        private ScheduledTask countdownTask;
+        private final List<TaskHandle> countdownTitleTasks = new CopyOnWriteArrayList<>();
+        private TaskHandle countdownTask;
         private long countdownEndsAtMillis;
 
         private Lobby(String matchName) {

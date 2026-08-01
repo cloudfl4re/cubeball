@@ -1,6 +1,5 @@
 package com.github.squi2rel.cb.util;
 
-import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
 import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.entity.Entity;
@@ -10,67 +9,92 @@ import java.util.Objects;
 
 public final class FoliaScheduler {
     private static Plugin plugin;
+    private static boolean folia;
 
     private FoliaScheduler() {
     }
 
     public static void init(Plugin plugin) {
         FoliaScheduler.plugin = Objects.requireNonNull(plugin, "plugin");
+        FoliaScheduler.folia = detectFolia();
     }
 
-    public static ScheduledTask runGlobal(Runnable task) {
-        return Bukkit.getGlobalRegionScheduler().run(plugin(), scheduledTask -> task.run());
+    public static boolean isFolia() {
+        plugin();
+        return folia;
     }
 
-    public static ScheduledTask runGlobalLater(Runnable task, long delayTicks) {
-        return Bukkit.getGlobalRegionScheduler().runDelayed(plugin(), scheduledTask -> task.run(), normalizeTicks(delayTicks));
+    public static TaskHandle runGlobal(Runnable task) {
+        if (folia) return handle(Bukkit.getGlobalRegionScheduler().run(plugin(), scheduledTask -> task.run()));
+        return handle(Bukkit.getScheduler().runTask(plugin(), task));
     }
 
-    public static ScheduledTask runGlobalTimer(Runnable task, long initialDelayTicks, long periodTicks) {
-        return Bukkit.getGlobalRegionScheduler().runAtFixedRate(
-                plugin(),
-                scheduledTask -> task.run(),
-                normalizeTicks(initialDelayTicks),
-                normalizeTicks(periodTicks)
-        );
+    public static TaskHandle runGlobalLater(Runnable task, long delayTicks) {
+        long delay = normalizeTicks(delayTicks);
+        if (folia) return handle(Bukkit.getGlobalRegionScheduler().runDelayed(plugin(), scheduledTask -> task.run(), delay));
+        return handle(Bukkit.getScheduler().runTaskLater(plugin(), task, delay));
     }
 
-    public static ScheduledTask runRegion(Location location, Runnable task) {
-        return Bukkit.getRegionScheduler().run(plugin(), location, scheduledTask -> task.run());
+    public static TaskHandle runGlobalTimer(Runnable task, long initialDelayTicks, long periodTicks) {
+        long initialDelay = normalizeTicks(initialDelayTicks);
+        long period = normalizeTicks(periodTicks);
+        if (folia) {
+            return handle(Bukkit.getGlobalRegionScheduler().runAtFixedRate(
+                    plugin(), scheduledTask -> task.run(), initialDelay, period));
+        }
+        return handle(Bukkit.getScheduler().runTaskTimer(plugin(), task, initialDelay, period));
     }
 
-    public static ScheduledTask runRegionLater(Location location, Runnable task, long delayTicks) {
-        return Bukkit.getRegionScheduler().runDelayed(plugin(), location, scheduledTask -> task.run(), normalizeTicks(delayTicks));
+    public static TaskHandle runRegion(Location location, Runnable task) {
+        if (folia) return handle(Bukkit.getRegionScheduler().run(plugin(), location, scheduledTask -> task.run()));
+        return handle(Bukkit.getScheduler().runTask(plugin(), task));
     }
 
-    public static ScheduledTask runEntity(Entity entity, Runnable task) {
+    public static TaskHandle runRegionLater(Location location, Runnable task, long delayTicks) {
+        long delay = normalizeTicks(delayTicks);
+        if (folia) return handle(Bukkit.getRegionScheduler().runDelayed(plugin(), location, scheduledTask -> task.run(), delay));
+        return handle(Bukkit.getScheduler().runTaskLater(plugin(), task, delay));
+    }
+
+    public static TaskHandle runEntity(Entity entity, Runnable task) {
         return runEntity(entity, task, () -> {
         });
     }
 
-    public static ScheduledTask runEntity(Entity entity, Runnable task, Runnable retired) {
-        return entity.getScheduler().run(plugin(), scheduledTask -> task.run(), retired);
+    public static TaskHandle runEntity(Entity entity, Runnable task, Runnable retired) {
+        if (folia) return handle(entity.getScheduler().run(plugin(), scheduledTask -> task.run(), retired));
+        return handle(Bukkit.getScheduler().runTask(plugin(), task));
     }
 
-    public static ScheduledTask runEntityLater(Entity entity, Runnable task, long delayTicks) {
-        return entity.getScheduler().runDelayed(plugin(), scheduledTask -> task.run(), () -> {
-        }, normalizeTicks(delayTicks));
+    public static TaskHandle runEntityLater(Entity entity, Runnable task, long delayTicks) {
+        long delay = normalizeTicks(delayTicks);
+        if (folia) return handle(entity.getScheduler().runDelayed(plugin(), scheduledTask -> task.run(), () -> {
+        }, delay));
+        return handle(Bukkit.getScheduler().runTaskLater(plugin(), task, delay));
     }
 
-    public static ScheduledTask runEntityTimer(Entity entity, Runnable task, long initialDelayTicks, long periodTicks) {
-        return entity.getScheduler().runAtFixedRate(
-                plugin(),
-                scheduledTask -> task.run(),
-                () -> {
-                },
-                normalizeTicks(initialDelayTicks),
-                normalizeTicks(periodTicks)
-        );
+    public static TaskHandle runEntityTimer(Entity entity, Runnable task, long initialDelayTicks, long periodTicks) {
+        long initialDelay = normalizeTicks(initialDelayTicks);
+        long period = normalizeTicks(periodTicks);
+        if (folia) {
+            return handle(entity.getScheduler().runAtFixedRate(
+                    plugin(), scheduledTask -> task.run(), () -> {
+                    }, initialDelay, period));
+        }
+        return handle(Bukkit.getScheduler().runTaskTimer(plugin(), task, initialDelay, period));
+    }
+
+    public static TaskHandle runAsync(Runnable task) {
+        if (folia) return handle(Bukkit.getAsyncScheduler().runNow(plugin(), scheduledTask -> task.run()));
+        return handle(Bukkit.getScheduler().runTaskAsynchronously(plugin(), task));
     }
 
     public static void cancelPluginTasks(Plugin plugin) {
-        Bukkit.getGlobalRegionScheduler().cancelTasks(plugin);
-        Bukkit.getAsyncScheduler().cancelTasks(plugin);
+        if (folia) {
+            Bukkit.getGlobalRegionScheduler().cancelTasks(plugin);
+            Bukkit.getAsyncScheduler().cancelTasks(plugin);
+        }
+        Bukkit.getScheduler().cancelTasks(plugin);
     }
 
     private static Plugin plugin() {
@@ -82,5 +106,22 @@ public final class FoliaScheduler {
 
     private static long normalizeTicks(long ticks) {
         return Math.max(1L, ticks);
+    }
+
+    private static boolean detectFolia() {
+        try {
+            Class.forName("io.papermc.paper.threadedregions.RegionizedServer");
+            return true;
+        } catch (ClassNotFoundException ignored) {
+            return false;
+        }
+    }
+
+    private static TaskHandle handle(io.papermc.paper.threadedregions.scheduler.ScheduledTask task) {
+        return task::cancel;
+    }
+
+    private static TaskHandle handle(org.bukkit.scheduler.BukkitTask task) {
+        return task::cancel;
     }
 }

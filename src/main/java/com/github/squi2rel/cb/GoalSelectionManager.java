@@ -61,9 +61,17 @@ public final class GoalSelectionManager {
             save(selection);
             selections.remove(player.getUniqueId());
             player.sendMessage(I18n.format("menu_desc_goal_set", "c", goalSize(selection.pos1, selection.pos2)));
-            CubeBall.save();
+            CubeBall.saveAsync();
         }
         return true;
+    }
+
+    public static void cancel(Player player) {
+        if (player != null) selections.remove(player.getUniqueId());
+    }
+
+    public static void clearAll() {
+        selections.clear();
     }
 
     private static void save(Selection selection) {

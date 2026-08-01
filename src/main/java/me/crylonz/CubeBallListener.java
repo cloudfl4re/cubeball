@@ -240,6 +240,7 @@ public class CubeBallListener implements Listener {
     @EventHandler
     public static void onPlayerLeave(PlayerQuitEvent event) {
         Player player = event.getPlayer();
+        GoalSelectionManager.cancel(player);
         ResidenceBossBar.remove(player);
         cooldown.remove(player.getUniqueId());
         if (JoinSignManager.isWaiting(player)) {

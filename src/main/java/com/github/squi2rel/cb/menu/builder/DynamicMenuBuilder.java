@@ -15,7 +15,7 @@ import java.util.function.Supplier;
 @SuppressWarnings("unused")
 public class DynamicMenuBuilder<T> extends MenuBuilderBase {
     private DynamicMenuBuilderHandler<T> builder;
-    private DynamicMenuContext<T> context;
+    private final ThreadLocal<DynamicMenuContext<T>> context = new ThreadLocal<>();
 
     public DynamicMenuBuilder(String title, int row, DynamicMenuBuilderHandler<T> builder) {
         this.title = title;
@@ -25,13 +25,13 @@ public class DynamicMenuBuilder<T> extends MenuBuilderBase {
 
     public MenuItem<T> setSlot(int column, int row, Material item, String name, String desc) {
         MenuItem<T> element = new MenuItem<>(item, name, desc, prefix, lorePrefix);
-        Objects.requireNonNull(context).items.set(row * 9 + column, element);
+        currentContext().items.set(row * 9 + column, element);
         return element;
     }
 
     public MenuItem<T> setSlot(int column, int row, ItemStack item, String name, String desc) {
         MenuItem<T> element = new MenuItem<>(item, name, desc, prefix, lorePrefix);
-        Objects.requireNonNull(context).items.set(row * 9 + column, element);
+        currentContext().items.set(row * 9 + column, element);
         return element;
     }
 
@@ -61,26 +61,31 @@ public class DynamicMenuBuilder<T> extends MenuBuilderBase {
     }
 
     public <R> R withContext(DynamicMenuContext<T> context, Supplier<R> runnable) {
-        this.context = context;
-        R r = runnable.get();
-        this.context = null;
-        return r;
+        this.context.set(context);
+        try {
+            return runnable.get();
+        } finally {
+            this.context.remove();
+        }
     }
 
     public void withContext(DynamicMenuContext<T> context, Runnable runnable) {
-        this.context = context;
-        runnable.run();
-        this.context = null;
+        this.context.set(context);
+        try {
+            runnable.run();
+        } finally {
+            this.context.remove();
+        }
     }
 
     @Override
     public void setAutoClose(boolean autoClose) {
-        Objects.requireNonNull(context).autoClose = autoClose;
+        currentContext().autoClose = autoClose;
     }
 
     @SuppressWarnings("unchecked")
     public void clear() {
-        Objects.requireNonNull(context).items = Arrays.asList(new MenuItem[row * 9]);
+        currentContext().items = Arrays.asList(new MenuItem[row * 9]);
     }
 
     public void refresh() {
@@ -89,6 +94,10 @@ public class DynamicMenuBuilder<T> extends MenuBuilderBase {
 
     public DynamicMenuContext<T> build() {
         return new DynamicMenuContext<>(this);
+    }
+
+    private DynamicMenuContext<T> currentContext() {
+        return Objects.requireNonNull(context.get(), "Menu builder used outside its player context");
     }
 
     public static class DynamicMenuContext<T> extends MenuContext<T> {

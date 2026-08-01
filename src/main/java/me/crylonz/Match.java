@@ -3,7 +3,7 @@ package me.crylonz;
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.util.FoliaScheduler;
-import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import com.github.squi2rel.cb.util.TaskHandle;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.attribute.Attribute;
@@ -47,12 +47,12 @@ public class Match {
     private volatile boolean roundCountdownActive;
     private final AtomicInteger roundGeneration = new AtomicInteger();
     private final AtomicInteger scanGeneration = new AtomicInteger();
-    private final Set<ScheduledTask> roundTasks = ConcurrentHashMap.newKeySet();
+    private final Set<TaskHandle> roundTasks = ConcurrentHashMap.newKeySet();
     private final AtomicInteger pauseGeneration = new AtomicInteger();
     private final AtomicInteger voteGeneration = new AtomicInteger();
     private volatile PauseType pauseType = PauseType.NONE;
-    private volatile ScheduledTask pauseExpiryTask;
-    private volatile ScheduledTask pauseVoteTask;
+    private volatile TaskHandle pauseExpiryTask;
+    private volatile TaskHandle pauseVoteTask;
     private volatile PauseVote pauseVote;
     private volatile Team pauseTeam;
     private volatile boolean blueTimeoutUsed;
@@ -300,6 +300,7 @@ public class Match {
         }
         scheduleRoundTask(roundToken, () -> {
             sendMessageToAllPlayer(I18n.get("go"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 2);
+            forEachPlayer(true, VisualEffects::roundStart);
             for (Location spawn : getAllSpawns()) setSurrounding(spawn, Material.AIR);
             if (!isRoundActive(roundToken)) return;
             FoliaScheduler.runRegion(data.ballSpawn, () -> startRound(roundToken));
@@ -330,7 +331,7 @@ public class Match {
     private synchronized void scheduleGoalRestart() {
         cancelRoundTasks(false);
         int roundToken = roundGeneration.incrementAndGet();
-        ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
+        TaskHandle task = FoliaScheduler.runGlobalLater(() -> {
             synchronized (Match.this) {
                 if (roundGeneration.get() != roundToken || canceled || matchState != GOAL) return;
                 startDelayedRound();
@@ -340,7 +341,7 @@ public class Match {
     }
 
     private void scheduleRoundTask(int roundToken, Runnable runnable, long delayTicks) {
-        ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
+        TaskHandle task = FoliaScheduler.runGlobalLater(() -> {
             if (!isRoundActive(roundToken)) return;
             runnable.run();
         }, delayTicks);
@@ -359,7 +360,7 @@ public class Match {
 
     private void cancelRoundTasks(boolean clearBarriers) {
         roundCountdownActive = false;
-        for (ScheduledTask task : roundTasks) {
+        for (TaskHandle task : roundTasks) {
             if (task != null) task.cancel();
         }
         roundTasks.clear();
@@ -695,6 +696,7 @@ public class Match {
             String score = ChatColor.BLUE.toString() + getBlueScore() + ChatColor.WHITE + " - " + ChatColor.RED + getRedScore();
             setMatchState(OVERTIME);
             sendMessageToAllPlayer(I18n.get("overtime"), score, 3, Sound.ENTITY_RABBIT_DEATH, 0.5f);
+            forEachPlayer(true, VisualEffects::overtime);
             if (restartOvertimeRound) startDelayedRound();
         }
     }
@@ -725,20 +727,31 @@ public class Match {
         ArrayList<Map.Entry<UUID, Integer>> list = new ArrayList<>(goals.entrySet());
         list.sort((e1, e2) -> Integer.compare(e2.getValue(), e1.getValue()));
         int totalGoals = redScore + blueScore;
-        forEachPlayer(true, player -> {
-            player.sendMessage(I18n.get("game_over"));
-            player.sendMessage(I18n.get("goal_rank"));
-            player.sendMessage(I18n.format("total_goals", "total", totalGoals));
-            int i = 0;
-            for (Map.Entry<UUID, Integer> entry : list) {
-                player.sendMessage(I18n.format("player_goal",
-                        "rank", ++i,
-                        "color", (blueTeam.stream().anyMatch(p -> p.getUniqueId().equals(entry.getKey())) ? ChatColor.BLUE : ChatColor.RED),
-                        "name", getName(entry.getKey()),
-                        "goals", entry.getValue()
-                ));
-            }
-        });
+        List<Player> participants = getAllPlayer(true);
+        Map<UUID, Team> teamByPlayer = new HashMap<>();
+        blueTeam.forEach(player -> teamByPlayer.put(player.getUniqueId(), Team.BLUE));
+        redTeam.forEach(player -> teamByPlayer.put(player.getUniqueId(), Team.RED));
+        for (Player participant : participants) {
+            if (participant == null) continue;
+            Team participantTeam = teamByPlayer.get(participant.getUniqueId());
+            runForPlayer(participant, player -> {
+                boolean playerWon = winner != null && participantTeam == winner;
+                VisualEffects.matchResult(player, playerWon, winner == null);
+                player.sendMessage(I18n.get("game_over"));
+                player.sendMessage(I18n.get("goal_rank"));
+                player.sendMessage(I18n.format("total_goals", "total", totalGoals));
+                int i = 0;
+                for (Map.Entry<UUID, Integer> entry : list) {
+                    Team scorerTeam = teamByPlayer.get(entry.getKey());
+                    player.sendMessage(I18n.format("player_goal",
+                            "rank", ++i,
+                            "color", scorerTeam == Team.BLUE ? ChatColor.BLUE : ChatColor.RED,
+                            "name", getName(entry.getKey()),
+                            "goals", entry.getValue()
+                    ));
+                }
+            });
+        }
 
         removeBall();
         restorePlayerScales();
@@ -857,7 +870,7 @@ public class Match {
         FoliaScheduler.runRegion(location, () -> {
             Location blockLocation = location.getBlock().getLocation();
             Objects.requireNonNull(blockLocation.getWorld()).spawnEntity(blockLocation, EntityType.FIREWORK_ROCKET);
-            Objects.requireNonNull(blockLocation.getWorld()).playEffect(blockLocation, Effect.VILLAGER_PLANT_GROW, 3);
+            VisualEffects.goalBurst(blockLocation, team);
         });
     }
 
