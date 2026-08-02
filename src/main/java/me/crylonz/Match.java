@@ -841,29 +841,47 @@ public class Match {
     }
 
     public synchronized void cancel() {
+        List<Player> players = getAllPlayer(true);
         invalidateRoundSequence();
         clearPauseState();
         removeBall();
         restorePlayerScales();
-        restoreAndExitPlayers();
+        restoreAndExitPlayers(players);
         reset();
+        clearPlayers();
         canceled = true;
-        forEachPlayer(true, p -> {
-            p.sendMessage(I18n.get("match_canceled"));
-        });
+        ResidenceBossBar.refreshAll();
+        for (Player player : players) {
+            runForPlayer(player, p -> p.sendMessage(I18n.get("match_canceled")));
+        }
     }
 
     private void restoreAndExitPlayers() {
-        for (Player player : getAllPlayer(true)) {
+        restoreAndExitPlayers(getAllPlayer(true));
+    }
+
+    private void restoreAndExitPlayers(Collection<Player> players) {
+        for (Player player : players) {
             if (player == null) continue;
             invalidateSpectatorState(player.getUniqueId());
             CubeBall.reservePlayerExit(player);
         }
-        forEachPlayer(true, player -> {
-            PotionEffect effect = player.getPotionEffect(PotionEffectType.SLOWNESS);
-            if (effect != null && effect.getAmplifier() >= 255) player.removePotionEffect(PotionEffectType.SLOWNESS);
-            CubeBall.restorePlayerAndExit(player);
-        });
+        for (Player player : players) {
+            runForPlayer(player, target -> {
+                PotionEffect effect = target.getPotionEffect(PotionEffectType.SLOWNESS);
+                if (effect != null && effect.getAmplifier() >= 255) target.removePotionEffect(PotionEffectType.SLOWNESS);
+                CubeBall.restorePlayerAndExit(target);
+            });
+        }
+    }
+
+    private void clearPlayers() {
+        for (Player player : spectatorTeam) {
+            if (player != null) invalidateSpectatorState(player.getUniqueId());
+        }
+        blueTeam.clear();
+        redTeam.clear();
+        spectatorTeam.clear();
     }
 
     public void sendScoreToPlayer() {

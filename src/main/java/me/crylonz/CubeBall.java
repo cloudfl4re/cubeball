@@ -794,6 +794,7 @@ public class CubeBall extends JavaPlugin {
         if (ballData == null || ballData.getBall() == null) return;
 
         Entity ball = ballData.getBall();
+        if (!ownsLiveState(ball)) return;
         if (!ball.isValid() || ball.isDead()) return;
 
         ball.setTicksLived(1);
@@ -808,6 +809,7 @@ public class CubeBall extends JavaPlugin {
         Location ballLocation = ball.getLocation();
         for (Entity entity : ball.getNearbyEntities(5, 5, 5)) {
             if (!(entity instanceof Player player)) continue;
+            if (!ownsLiveState(player)) continue;
             if (match != null && !match.containsPlayer(player)) continue;
             Location playerLocation = player.getLocation();
             if (ballLocation.getY() - playerLocation.getY() > MAX_KICK_VERTICAL_REACH) continue;
@@ -910,6 +912,11 @@ public class CubeBall extends JavaPlugin {
             return match.getData().isNearRedTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
         }
         return false;
+    }
+
+    private static boolean ownsLiveState(Entity entity) {
+        if (entity == null) return false;
+        return FoliaScheduler.isFolia() ? Bukkit.isOwnedByCurrentRegion(entity) : Bukkit.isPrimaryThread();
     }
 
     private static void protectBallEntity(Entity entity) {

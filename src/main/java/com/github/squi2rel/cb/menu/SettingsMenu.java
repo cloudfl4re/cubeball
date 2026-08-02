@@ -206,7 +206,7 @@ public final class SettingsMenu {
                                         stateColor(match.getMatchState()) + match.getName(), matchListLore(match))
                                 .setGlowing(match.isInProgress())
                                 .setLeftClickAction((p, view) -> {
-                                    DynamicMenuBuilder.DynamicMenuContext<Match> details = desc.build();
+                                    DynamicMenuBuilder.DynamicMenuContext<Match> details = descMenu().build();
                                     details.setParent(view);
                                     details.sendTo(p, match);
                                 });
@@ -242,7 +242,7 @@ public final class SettingsMenu {
                             CubeBall.matches.remove(match.getName(), match);
                             CubeBall.saveAsync();
                             p.sendMessage(I18n.get("match_removed"));
-                            DynamicMenuBuilder.DynamicMenuContext<Integer> matches = list.build();
+                            DynamicMenuBuilder.DynamicMenuContext<Integer> matches = listMenu().build();
                             matches.setParent(settingsMenu());
                             matches.sendTo(p, 0);
                         });
@@ -262,7 +262,7 @@ public final class SettingsMenu {
         builder.setSlot(4, 2, BOOK, I18n.get("menu_list"),
                         "§7查看可管理的全部场地\n§7当前共 §f" + CubeBall.matches.size() + " §7座")
                 .setLeftClickAction((p, view) -> {
-                    DynamicMenuBuilder.DynamicMenuContext<Integer> matches = list.build();
+                    DynamicMenuBuilder.DynamicMenuContext<Integer> matches = listMenu().build();
                     matches.setParent(view);
                     matches.sendTo(p, 0);
                 });
@@ -313,7 +313,7 @@ public final class SettingsMenu {
     });
 
     public static void open(Player player) {
-        settingsBuilder.build().sendTo(player, null);
+        settingsMenu().sendTo(player, null);
     }
 
     private static void beginCreate(Player player, MenuContext<?> parent) {
@@ -346,7 +346,7 @@ public final class SettingsMenu {
             CubeBall.saveAsync();
             player.sendMessage(I18n.get("menu_new_success"));
             VisualEffects.setupSuccess(player);
-            DynamicMenuBuilder.DynamicMenuContext<Match> details = desc.build();
+            DynamicMenuBuilder.DynamicMenuContext<Match> details = descMenu().build();
             details.setParent(parent);
             details.sendTo(player, match);
         });
@@ -731,10 +731,22 @@ public final class SettingsMenu {
     }
 
     private static DynamicMenuBuilder<Match> deleteConfirmMenu() {
+        deleteConfirm.setTitle(I18n.get("menu_delete_title"));
         return deleteConfirm;
     }
 
+    private static DynamicMenuBuilder<Match> descMenu() {
+        desc.setTitle(I18n.get("menu_desc_title"));
+        return desc;
+    }
+
+    private static DynamicMenuBuilder<Integer> listMenu() {
+        list.setTitle(I18n.get("menu_list_title"));
+        return list;
+    }
+
     private static MenuContext<Void> settingsMenu() {
+        settingsBuilder.setTitle(I18n.get("menu_title"));
         return settingsBuilder.build();
     }
 

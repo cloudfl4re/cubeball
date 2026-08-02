@@ -8,6 +8,8 @@ import org.bukkit.plugin.Plugin;
 import java.util.Objects;
 
 public final class FoliaScheduler {
+    private static final TaskHandle NOOP = () -> {
+    };
     private static Plugin plugin;
     private static boolean folia;
 
@@ -118,7 +120,7 @@ public final class FoliaScheduler {
     }
 
     private static TaskHandle handle(io.papermc.paper.threadedregions.scheduler.ScheduledTask task) {
-        return task::cancel;
+        return task == null ? NOOP : task::cancel;
     }
 
     private static TaskHandle handle(org.bukkit.scheduler.BukkitTask task) {
