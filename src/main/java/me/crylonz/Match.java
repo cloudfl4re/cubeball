@@ -3,7 +3,7 @@ package me.crylonz;
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.util.FoliaScheduler;
-import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import com.github.squi2rel.cb.util.TaskHandle;
 import org.bukkit.*;
 import org.bukkit.block.Block;
 import org.bukkit.attribute.Attribute;
@@ -47,12 +47,12 @@ public class Match {
     private volatile boolean roundCountdownActive;
     private final AtomicInteger roundGeneration = new AtomicInteger();
     private final AtomicInteger scanGeneration = new AtomicInteger();
-    private final Set<ScheduledTask> roundTasks = ConcurrentHashMap.newKeySet();
+    private final Set<TaskHandle> roundTasks = ConcurrentHashMap.newKeySet();
     private final AtomicInteger pauseGeneration = new AtomicInteger();
     private final AtomicInteger voteGeneration = new AtomicInteger();
     private volatile PauseType pauseType = PauseType.NONE;
-    private volatile ScheduledTask pauseExpiryTask;
-    private volatile ScheduledTask pauseVoteTask;
+    private volatile TaskHandle pauseExpiryTask;
+    private volatile TaskHandle pauseVoteTask;
     private volatile PauseVote pauseVote;
     private volatile Team pauseTeam;
     private volatile boolean blueTimeoutUsed;
@@ -69,7 +69,15 @@ public class Match {
     }
 
     public synchronized void scanPlayer() {
+        scanPlayer(null);
+    }
+
+    public synchronized void scanPlayer(Runnable completion) {
         if (isInProgress()) return;
+        if (!isConfiguredForStart()) {
+            matchState = CREATED;
+            return;
+        }
         int scanToken = scanGeneration.incrementAndGet();
         canceled = false;
         matchState = CREATED;
@@ -101,15 +109,16 @@ public class Match {
         int taskCount = blueSpawns.size() + redSpawns.size() + onlinePlayers.size();
         if (taskCount <= 0) {
             matchState = READY;
+            if (completion != null) completion.run();
             return;
         }
 
         AtomicInteger remaining = new AtomicInteger(taskCount);
         for (Location spawn : blueSpawns) {
-            scanNearPlayers(spawn, Team.BLUE, remaining, scanToken);
+            scanNearPlayers(spawn, Team.BLUE, remaining, scanToken, completion);
         }
         for (Location spawn : redSpawns) {
-            scanNearPlayers(spawn, Team.RED, remaining, scanToken);
+            scanNearPlayers(spawn, Team.RED, remaining, scanToken, completion);
         }
 
         World world = data.ballSpawn.getWorld();
@@ -128,15 +137,15 @@ public class Match {
                         }
                     }
                 } finally {
-                    finishScan(remaining, scanToken);
+                    finishScan(remaining, scanToken, completion);
                 }
-            }, () -> finishScan(remaining, scanToken));
+            }, () -> finishScan(remaining, scanToken, completion));
         }
     }
 
-    private void scanNearPlayers(Location spawn, Team team, AtomicInteger remaining, int scanToken) {
+    private void scanNearPlayers(Location spawn, Team team, AtomicInteger remaining, int scanToken, Runnable completion) {
         if (spawn == null) {
-            finishScan(remaining, scanToken);
+            finishScan(remaining, scanToken, completion);
             return;
         }
         FoliaScheduler.runRegion(spawn, () -> {
@@ -155,14 +164,15 @@ public class Match {
                     }
                 }
             } finally {
-                finishScan(remaining, scanToken);
+                finishScan(remaining, scanToken, completion);
             }
         });
     }
 
-    private synchronized void finishScan(AtomicInteger remaining, int scanToken) {
+    private synchronized void finishScan(AtomicInteger remaining, int scanToken, Runnable completion) {
         if (remaining.decrementAndGet() == 0 && scanGeneration.get() == scanToken && matchState == CREATED && !canceled) {
             matchState = READY;
+            if (completion != null) completion.run();
         }
     }
 
@@ -180,7 +190,7 @@ public class Match {
                 if (remove && player != null) invalidateSpectatorState(player.getUniqueId());
                 return remove;
             });
-            if (!blueTeam.isEmpty() || !redTeam.isEmpty()) {
+            if (!blueTeam.isEmpty() && !redTeam.isEmpty() && isConfiguredForStart()) {
                 sortSpawns();
 
                 startDelayedRound();
@@ -216,13 +226,13 @@ public class Match {
         while (filled < n) {
             int segmentLen = Math.min(size, n - filled);
 
-            int[] pool = new int[segmentLen];
-            for (int i = 0; i < segmentLen; i++) {
+            int[] pool = new int[size];
+            for (int i = 0; i < size; i++) {
                 pool[i] = i;
             }
 
             for (int i = 0; i < segmentLen; i++) {
-                int j = i + rand.nextInt(segmentLen - i);
+                int j = i + rand.nextInt(size - i);
                 int tmp = pool[i];
                 pool[i] = pool[j];
                 pool[j] = tmp;
@@ -233,11 +243,21 @@ public class Match {
     }
 
     public void teleportTeam(Set<Player> team, List<Location> spawns) {
+        if (spawns.isEmpty()) return;
         int[] ids = randomIds(spawns.size(), team.size());
         int i = 0;
         for (Player player : team) {
             Location target = getFacingLocation(spawns.get(ids[i++]), data.ballSpawn);
-            runForPlayer(player, p -> p.teleportAsync(target));
+            runForPlayer(player, p -> {
+                try {
+                    p.teleportAsync(target).whenComplete((success, error) -> {
+                        if (error == null && Boolean.TRUE.equals(success)) return;
+                        FoliaScheduler.runEntity(p, () -> handleParticipantPreparationFailure(p, "match_teleport_failed"));
+                    });
+                } catch (RuntimeException error) {
+                    handleParticipantPreparationFailure(p, "match_teleport_failed");
+                }
+            });
         }
     }
 
@@ -272,16 +292,18 @@ public class Match {
         List<Location> allSpawns = getAllSpawns();
         for (Location spawn : allSpawns) setSurrounding(spawn, Material.BARRIER);
         forEachPlayer(false, player -> {
-            if (!PlayerStateCache.has(player)) PlayerStateCache.save(player);
-            normalizePlayerForMatch(player);
-            PlayerStateCache.clear(player);
-            applyTeamKit(player, getPlayingTeam(player));
-            clearSpectatorVisibility(player);
-            player.setAllowFlight(false);
-            player.setFlying(false);
-            setMatchHunger(player);
-            player.setVelocity(new Vector(0, 0, 0));
-            player.addPotionEffect(effect);
+            PlayerStateCache.saveThen(player, () -> {
+                if (!isInProgress() || !containsPlayer(player) || isExiting(player.getUniqueId())) return;
+                normalizePlayerForMatch(player);
+                PlayerStateCache.clear(player);
+                applyTeamKit(player, getPlayingTeam(player));
+                clearSpectatorVisibility(player);
+                player.setAllowFlight(false);
+                player.setFlying(false);
+                setMatchHunger(player);
+                player.setVelocity(new Vector(0, 0, 0));
+                player.addPotionEffect(effect);
+            }, error -> handleParticipantPreparationFailure(player, "player_state_save_failed"));
         });
         if (resumeCountdown) {
             sendMessageToAllPlayer(I18n.format("pause_resume_countdown", "seconds", 3), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 1);
@@ -300,6 +322,7 @@ public class Match {
         }
         scheduleRoundTask(roundToken, () -> {
             sendMessageToAllPlayer(I18n.get("go"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 2);
+            forEachPlayer(true, VisualEffects::roundStart);
             for (Location spawn : getAllSpawns()) setSurrounding(spawn, Material.AIR);
             if (!isRoundActive(roundToken)) return;
             FoliaScheduler.runRegion(data.ballSpawn, () -> startRound(roundToken));
@@ -330,7 +353,7 @@ public class Match {
     private synchronized void scheduleGoalRestart() {
         cancelRoundTasks(false);
         int roundToken = roundGeneration.incrementAndGet();
-        ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
+        TaskHandle task = FoliaScheduler.runGlobalLater(() -> {
             synchronized (Match.this) {
                 if (roundGeneration.get() != roundToken || canceled || matchState != GOAL) return;
                 startDelayedRound();
@@ -340,7 +363,7 @@ public class Match {
     }
 
     private void scheduleRoundTask(int roundToken, Runnable runnable, long delayTicks) {
-        ScheduledTask task = FoliaScheduler.runGlobalLater(() -> {
+        TaskHandle task = FoliaScheduler.runGlobalLater(() -> {
             if (!isRoundActive(roundToken)) return;
             runnable.run();
         }, delayTicks);
@@ -359,7 +382,7 @@ public class Match {
 
     private void cancelRoundTasks(boolean clearBarriers) {
         roundCountdownActive = false;
-        for (ScheduledTask task : roundTasks) {
+        for (TaskHandle task : roundTasks) {
             if (task != null) task.cancel();
         }
         roundTasks.clear();
@@ -394,20 +417,51 @@ public class Match {
     private void refreshParticipantState(Player player) {
         runForPlayer(player, target -> {
             if (!isInProgress() || !containsPlayer(target)) return;
-            if (!PlayerStateCache.has(target)) PlayerStateCache.save(target);
-            normalizePlayerForMatch(target);
-            PlayerStateCache.clear(target);
-            applyTeamKit(target, getPlayingTeam(target));
-            clearSpectatorVisibility(target);
-            target.setAllowFlight(false);
-            target.setFlying(false);
-            setMatchHunger(target);
+            PlayerStateCache.saveThen(target, () -> {
+                if (!isInProgress() || !containsPlayer(target)) return;
+                normalizePlayerForMatch(target);
+                PlayerStateCache.clear(target);
+                applyTeamKit(target, getPlayingTeam(target));
+                clearSpectatorVisibility(target);
+                target.setAllowFlight(false);
+                target.setFlying(false);
+                setMatchHunger(target);
+            }, error -> handleParticipantPreparationFailure(target, "player_state_save_failed"));
+        });
+    }
+
+    private void handleParticipantPreparationFailure(Player player, String messageKey) {
+        synchronized (this) {
+            blueTeam.remove(player);
+            redTeam.remove(player);
+            invalidateSpectatorState(player.getUniqueId());
+            spectatorTeam.remove(player);
+        }
+        sendPlayerMessage(player, I18n.get(messageKey));
+        CubeBall.reservePlayerExit(player);
+        CubeBall.restorePlayerAndExit(player);
+        FoliaScheduler.runGlobal(() -> {
+            synchronized (Match.this) {
+                if (isInProgress() && (blueTeam.isEmpty() || redTeam.isEmpty())) cancel();
+            }
         });
     }
 
     public void refreshSpectatorState(Player player) {
         if (isSpectator(player) && !isExiting(player.getUniqueId())) {
             scheduleSpectatorState(player, null);
+        }
+    }
+
+    public void maintainSpectatorStates() {
+        if (!isInProgress()) return;
+        for (Player player : spectatorTeam) {
+            runForPlayer(player, target -> {
+                if (!isSpectator(target) || isExiting(target.getUniqueId())) return;
+                if (!target.getAllowFlight() || !target.isInvisible() || target.isCollidable()) {
+                    scheduleSpectatorState(target, null);
+                }
+            });
         }
     }
 
@@ -481,11 +535,7 @@ public class Match {
     }
 
     public boolean isConfiguredForStart() {
-        return data.ballSpawn != null
-                && !data.blueTeamSpawns.isEmpty()
-                && !data.redTeamSpawns.isEmpty()
-                && data.hasBlueTeamGoalArea()
-                && data.hasRedTeamGoalArea();
+        return data.isConfiguredForStart();
     }
 
     public void prepareLobbyTeams(Collection<Player> redPlayers, Collection<Player> bluePlayers, Collection<Player> spectatorPlayers) {
@@ -538,7 +588,7 @@ public class Match {
     private void addLobbyPlayers(Set<Player> target, Collection<Player> players, int max, List<Player> overflow) {
         if (players == null) return;
         for (Player player : players) {
-            if (player == null || !player.isOnline()) continue;
+            if (player == null) continue;
             if (target.size() < max) {
                 target.add(player);
             } else if (overflow != null) {
@@ -553,7 +603,7 @@ public class Match {
         if (!PlayerStateCache.has(player) && CubeBall.hasManagedSpectatorVisibility(player)) {
             CubeBall.clearManagedSpectatorVisibility(player);
         }
-        if (!PlayerStateCache.has(player)) PlayerStateCache.save(player);
+        if (!PlayerStateCache.has(player)) return false;
         CubeBall.markManagedSpectatorVisibility(player);
         player.setAllowFlight(true);
         player.setFlying(true);
@@ -584,11 +634,16 @@ public class Match {
                 spectatorStateTokens.remove(playerId, token);
                 return;
             }
-            if (!enableSpectatorState(target)) {
+            PlayerStateCache.saveThen(target, () -> {
+                if (!Objects.equals(spectatorStateTokens.get(playerId), token) || !enableSpectatorState(target)) {
+                    spectatorStateTokens.remove(playerId, token);
+                    return;
+                }
+                if (afterEnable != null) afterEnable.accept(target);
+            }, error -> {
                 spectatorStateTokens.remove(playerId, token);
-                return;
-            }
-            if (afterEnable != null) afterEnable.accept(target);
+                sendPlayerMessage(target, I18n.get("player_state_save_failed"));
+            });
         });
     }
 
@@ -695,12 +750,17 @@ public class Match {
             String score = ChatColor.BLUE.toString() + getBlueScore() + ChatColor.WHITE + " - " + ChatColor.RED + getRedScore();
             setMatchState(OVERTIME);
             sendMessageToAllPlayer(I18n.get("overtime"), score, 3, Sound.ENTITY_RABBIT_DEATH, 0.5f);
+            forEachPlayer(true, VisualEffects::overtime);
             if (restartOvertimeRound) startDelayedRound();
         }
     }
 
     public synchronized String forceEndMatch() {
-        if (!isInProgress()) return I18n.get("force_end_not_active");
+        if (!isInProgress()) {
+            if (matchState != CREATED && matchState != READY) return I18n.get("force_end_not_active");
+            cancel();
+            return I18n.get("force_end_canceled");
+        }
         invalidateRoundSequence();
         Team winner = null;
         String title;
@@ -725,20 +785,31 @@ public class Match {
         ArrayList<Map.Entry<UUID, Integer>> list = new ArrayList<>(goals.entrySet());
         list.sort((e1, e2) -> Integer.compare(e2.getValue(), e1.getValue()));
         int totalGoals = redScore + blueScore;
-        forEachPlayer(true, player -> {
-            player.sendMessage(I18n.get("game_over"));
-            player.sendMessage(I18n.get("goal_rank"));
-            player.sendMessage(I18n.format("total_goals", "total", totalGoals));
-            int i = 0;
-            for (Map.Entry<UUID, Integer> entry : list) {
-                player.sendMessage(I18n.format("player_goal",
-                        "rank", ++i,
-                        "color", (blueTeam.stream().anyMatch(p -> p.getUniqueId().equals(entry.getKey())) ? ChatColor.BLUE : ChatColor.RED),
-                        "name", getName(entry.getKey()),
-                        "goals", entry.getValue()
-                ));
-            }
-        });
+        List<Player> participants = getAllPlayer(true);
+        Map<UUID, Team> teamByPlayer = new HashMap<>();
+        blueTeam.forEach(player -> teamByPlayer.put(player.getUniqueId(), Team.BLUE));
+        redTeam.forEach(player -> teamByPlayer.put(player.getUniqueId(), Team.RED));
+        for (Player participant : participants) {
+            if (participant == null) continue;
+            Team participantTeam = teamByPlayer.get(participant.getUniqueId());
+            runForPlayer(participant, player -> {
+                boolean playerWon = winner != null && participantTeam == winner;
+                VisualEffects.matchResult(player, playerWon, winner == null);
+                player.sendMessage(I18n.get("game_over"));
+                player.sendMessage(I18n.get("goal_rank"));
+                player.sendMessage(I18n.format("total_goals", "total", totalGoals));
+                int i = 0;
+                for (Map.Entry<UUID, Integer> entry : list) {
+                    Team scorerTeam = teamByPlayer.get(entry.getKey());
+                    player.sendMessage(I18n.format("player_goal",
+                            "rank", ++i,
+                            "color", scorerTeam == Team.BLUE ? ChatColor.BLUE : ChatColor.RED,
+                            "name", getName(entry.getKey()),
+                            "goals", entry.getValue()
+                    ));
+                }
+            });
+        }
 
         removeBall();
         restorePlayerScales();
@@ -857,7 +928,7 @@ public class Match {
         FoliaScheduler.runRegion(location, () -> {
             Location blockLocation = location.getBlock().getLocation();
             Objects.requireNonNull(blockLocation.getWorld()).spawnEntity(blockLocation, EntityType.FIREWORK_ROCKET);
-            Objects.requireNonNull(blockLocation.getWorld()).playEffect(blockLocation, Effect.VILLAGER_PLANT_GROW, 3);
+            VisualEffects.goalBurst(blockLocation, team);
         });
     }
 
@@ -978,6 +1049,10 @@ public class Match {
 
     public boolean isInProgress() {
         return matchState == IN_PROGRESS || matchState == OVERTIME || matchState == GOAL || matchState == PAUSED;
+    }
+
+    public boolean canForceEnd() {
+        return isInProgress() || matchState == CREATED || matchState == READY;
     }
 
     public boolean canUseDash() {

@@ -1,8 +1,10 @@
 name: cubeball
 main: me.crylonz.CubeBall
-version: 1.0.0
-author: Crylonz, squi2rel, cloudfl4re
-description: Play football in Minecraft
+version: 1.1.1
+author: xWtree
+contributors: [Crylonz, squi2rel, cloudfl4re]
+website: https://github.com/mcxqk
+description: 支持 Folia/Paper 1.21.11 的方块足球小游戏
 api-version: "1.21.11"
 folia-supported: true
 softdepend:
@@ -13,7 +15,7 @@ softdepend:
 commands:
   ccb:
     description: Control command
-    usage: /ccb [join|debug|glow|roll|redteam|blueteam|setballhand|setballce|spawn|exitspawn|pause|resume|end|votepause]
+    usage: /ccb [help|input|join|check|reload|debug|glow|roll|redteam|blueteam|setballhand|setballce|spawn|exitspawn|pause|resume|end|votepause]
 permissions:
   cubeball.manage:
     description: Allows player to manage cubeball

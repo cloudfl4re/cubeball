@@ -23,11 +23,9 @@ import org.bukkit.event.player.PlayerGameModeChangeEvent;
 import org.bukkit.event.player.PlayerJoinEvent;
 import org.bukkit.event.player.PlayerMoveEvent;
 import org.bukkit.event.player.PlayerQuitEvent;
-import org.bukkit.event.player.PlayerRespawnEvent;
 import org.bukkit.event.player.PlayerCommandPreprocessEvent;
 import org.bukkit.event.player.PlayerInteractEvent;
 import org.bukkit.event.player.PlayerSwapHandItemsEvent;
-import org.bukkit.event.player.PlayerTeleportEvent;
 import org.bukkit.event.player.PlayerToggleFlightEvent;
 import org.bukkit.event.server.PluginEnableEvent;
 import org.bukkit.event.server.ServerCommandEvent;
@@ -140,19 +138,6 @@ public class CubeBallListener implements Listener {
         ResidenceBossBar.refreshLater(player);
     }
 
-    @EventHandler
-    public static void onPlayerRespawn(PlayerRespawnEvent event) {
-        Player player = event.getPlayer();
-        FoliaScheduler.runEntityLater(player, () -> {
-            for (Match match : matches.values()) {
-                if (match.isInProgress() && match.isSpectator(player)) {
-                    match.refreshSpectatorState(player);
-                    return;
-                }
-            }
-        }, 1L);
-    }
-
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
     public static void onExhaustion(EntityExhaustionEvent event) {
         if (event.getEntity() instanceof Player player && shouldPreserveFood(player)) {
@@ -180,19 +165,6 @@ public class CubeBallListener implements Listener {
     @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
     public static void onResidenceBossBarMove(PlayerMoveEvent event) {
         if (event.getTo() == null || sameBlock(event.getFrom(), event.getTo())) return;
-        ResidenceBossBar.refreshLater(event.getPlayer());
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public static void onWaitingLobbyTeleport(PlayerTeleportEvent event) {
-        Player player = event.getPlayer();
-        String residenceName = leftWaitingLobbyResidence(player, event.getFrom(), event.getTo());
-        if (residenceName == null) return;
-        scheduleWaitingLobbyExit(player, residenceName);
-    }
-
-    @EventHandler(priority = EventPriority.MONITOR, ignoreCancelled = true)
-    public static void onResidenceBossBarTeleport(PlayerTeleportEvent event) {
         ResidenceBossBar.refreshLater(event.getPlayer());
     }
 
@@ -240,6 +212,7 @@ public class CubeBallListener implements Listener {
     @EventHandler
     public static void onPlayerLeave(PlayerQuitEvent event) {
         Player player = event.getPlayer();
+        GoalSelectionManager.cancel(player);
         ResidenceBossBar.remove(player);
         cooldown.remove(player.getUniqueId());
         if (JoinSignManager.isWaiting(player)) {

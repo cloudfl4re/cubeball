@@ -1,16 +1,65 @@
+# CubeBall 主配置文件
+# 修改比赛场地时建议使用游戏内 /ccb 管理菜单，避免手写坐标出错。
+
+# 消息语言：zh 或 en
 language: zh
+
+# 玩家识别方式：name 适合离线服，uuid 适合正版服；支持 /ccb reload 热加载
+player-identity:
+  mode: name
+
+# 非管理员玩家最多可创建的场地数量
 maxMatchPerPlayer: 3
+
+# 调试日志开关；仅排查问题时开启
 debug: false
+
+# 等待大厅传送点，由 /ccb spawn 或管理菜单设置
 lobbySpawn: null
+
+# 比赛结束、离开大厅后的传送点，由 /ccb exitspawn 或管理菜单设置
 exitSpawn: null
+
+# 等待大厅设置
 waitingLobby:
+  # Residence 领地名称；留空表示不检查等待大厅领地
   residence: zqc
+
+# 领地内显示的比分 BossBar 队名
 bossbar:
   redteam: 红队
   blueteam: 蓝队
+
+# 足球外观与物理展示
 ball:
+  # 是否让足球发光
   glow: true
   roll:
+    # 自定义物品足球是否显示滚动动画
     enabled: true
+    # 滚动动画速度倍率，建议范围 0.2 - 3.0
     speed: 1.0
+
+# 视觉与音效反馈；总开关关闭后下列效果全部停用
+visuals:
+  enabled: true
+  # 管理菜单点击音效
+  menu-sounds: true
+  # 设置场地位置成功时的粒子和提示音
+  setup-feedback: true
+  # 加入大厅、选择队伍与大厅倒计时反馈
+  lobby-feedback: true
+  # 开赛、加时和胜负结算反馈
+  match-feedback: true
+  # 踢球、弹地和撞墙时的轻量粒子与音效
+  ball-impact: true
+  # 进球瞬间在球门区域播放队伍颜色粒子
+  goal-burst: true
+  ball-trail:
+    # 足球高速运动时显示轻量尾迹
+    enabled: true
+    # 每隔多少次物理更新生成一次粒子，越小越密集
+    interval-ticks: 4
+
+# 比赛场地数据；请优先在游戏内管理
 matches: []

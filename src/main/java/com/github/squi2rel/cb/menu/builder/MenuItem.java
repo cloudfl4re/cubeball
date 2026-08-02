@@ -14,6 +14,7 @@ public final class MenuItem<T> {
     private MenuHandler<T> leftShiftClickAction, rightShiftClickAction;
     private MenuHandler<T> dropAction, swapAction;
     private MenuHandler.HotbarMenuHandler<T> hotbarAction;
+    private boolean glowing;
 
     public MenuItem(Material item, String name, String desc, String namePrefix, String descPrefix) {
         this(item == null ? null : new ItemStack(item), name, desc, namePrefix, descPrefix);
@@ -73,6 +74,15 @@ public final class MenuItem<T> {
 
     public void setLorePrefix(String descPrefix) {
         this.descPrefix = descPrefix;
+    }
+
+    public boolean isGlowing() {
+        return glowing;
+    }
+
+    public MenuItem<T> setGlowing(boolean glowing) {
+        this.glowing = glowing;
+        return this;
     }
 
     public MenuItem<T> setAction(MenuHandler<T> action) {

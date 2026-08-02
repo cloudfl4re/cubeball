@@ -1,6 +1,7 @@
 package me.crylonz;
 
 import com.github.squi2rel.cb.CCBCommand;
+import com.github.squi2rel.cb.GoalSelectionManager;
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.menu.builder.MenuManager;
@@ -12,6 +13,8 @@ import org.bukkit.*;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.configuration.MemoryConfiguration;
+import org.bukkit.configuration.file.YamlConfiguration;
+import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
 import org.bukkit.entity.EntityType;
@@ -31,6 +34,15 @@ import org.joml.Vector3f;
 
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicBoolean;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
 
 import static java.lang.Math.abs;
 import static me.crylonz.MatchState.*;
@@ -51,11 +63,17 @@ public class CubeBall extends JavaPlugin {
     private static final double GOALKEEPER_ALIGNED_KICK_DISTANCE = 4.2;
     private static final double MAX_KICK_VERTICAL_REACH = 2.6;
 
-    public static int maxMatchPerPlayer;
-    public static boolean debugMode;
-    public static boolean ballGlow;
-    public static boolean ballRollEnabled;
-    public static double ballRollSpeed;
+    public static volatile int maxMatchPerPlayer;
+    public static volatile boolean debugMode;
+    public static volatile boolean ballGlow;
+    public static volatile boolean ballRollEnabled;
+    public static volatile double ballRollSpeed;
+    private static final AtomicBoolean configReloading = new AtomicBoolean();
+    private static final AtomicBoolean snapshotQueued = new AtomicBoolean();
+    private static final AtomicBoolean saveQueued = new AtomicBoolean();
+    private static final AtomicLong saveVersion = new AtomicLong();
+    private static final Object SAVE_LOCK = new Object();
+    private static volatile ConfigSnapshot pendingConfig;
     private static volatile Location lobbySpawn;
     private static volatile Location exitSpawn;
     private static volatile String waitingLobbyResidence = "zqc";
@@ -63,6 +81,7 @@ public class CubeBall extends JavaPlugin {
     private static final String DEFAULT_BOSS_BAR_BLUE_TEAM = "\u84dd\u961f";
     private static volatile String bossBarRedTeam = DEFAULT_BOSS_BAR_RED_TEAM;
     private static volatile String bossBarBlueTeam = DEFAULT_BOSS_BAR_BLUE_TEAM;
+    private static volatile String playerIdentityMode = "name";
     public static void generateBall(MatchData data, String id, Location location, Vector lastVelocity) {
         if (balls.get(id) != null) {
             throw new IllegalStateException("Same ID cannot be put on the same ball");
@@ -245,16 +264,7 @@ public class CubeBall extends JavaPlugin {
 
         saveDefaultConfig();
 
-        debugMode = getConfig().getBoolean("debug", false);
-        ballGlow = getConfig().getBoolean("ball.glow", true);
-        ballRollEnabled = getConfig().getBoolean("ball.roll.enabled", true);
-        ballRollSpeed = getConfig().getDouble("ball.roll.speed", 1.0);
-        lobbySpawn = getConfig().getSerializable("lobbySpawn", Location.class);
-        exitSpawn = getConfig().getSerializable("exitSpawn", Location.class);
-        String residenceName = getConfig().getString("waitingLobby.residence", "zqc");
-        waitingLobbyResidence = residenceName == null ? "" : residenceName.trim();
-        bossBarRedTeam = normalizeBossBarTeamName(getConfig().getString("bossbar.redteam"), DEFAULT_BOSS_BAR_RED_TEAM);
-        bossBarBlueTeam = normalizeBossBarTeamName(getConfig().getString("bossbar.blueteam"), DEFAULT_BOSS_BAR_BLUE_TEAM);
+        applyRuntimeConfig();
         if (!waitingLobbyResidence.isEmpty()) {
             ResidenceHook.init();
             if (!ResidenceHook.isAvailable()) {
@@ -270,7 +280,16 @@ public class CubeBall extends JavaPlugin {
         ConfigurationSection section = getConfig().getConfigurationSection("matches");
         if (section == null) section = new MemoryConfiguration();
         for (String key : Objects.requireNonNull(section).getKeys(false)) {
-            matches.put(key, new Match(key, MatchData.from(section.getConfigurationSection(key))));
+            ConfigurationSection matchSection = section.getConfigurationSection(key);
+            if (matchSection == null) {
+                getLogger().warning("已跳过无效比赛配置节点: matches." + key);
+                continue;
+            }
+            try {
+                matches.put(key, new Match(key, MatchData.from(matchSection)));
+            } catch (RuntimeException error) {
+                getLogger().log(java.util.logging.Level.WARNING, "已跳过损坏的比赛配置: " + key, error);
+            }
         }
 
         for (Player player : Bukkit.getOnlinePlayers()) {
@@ -278,8 +297,6 @@ public class CubeBall extends JavaPlugin {
                 if (PlayerStateCache.has(player) || hasManagedSpectatorVisibility(player)) restorePlayerAndExit(player);
             });
         }
-
-        maxMatchPerPlayer = getConfig().getInt("maxMatchPerPlayer", 3);
 
         getServer().getPluginManager().registerEvents(new CubeBallListener(), this);
         EmotecraftHook.init();
@@ -299,31 +316,166 @@ public class CubeBall extends JavaPlugin {
         JoinSignManager.shutdown();
         EmotecraftHook.shutdown();
         save();
+        PlayerStateCache.shutdown();
 
-        balls.forEach((key, value) -> {
-            if (value.getBall() != null) {
-                destroyBall(key);
-            }
-        });
+        // onDisable has no Region ownership. The non-persistent entities are
+        // left to world shutdown while only the plugin-owned task handles are cancelled.
+        balls.values().forEach(Ball::cancelPhysicsTask);
         FoliaScheduler.cancelPluginTasks(this);
+        GoalSelectionManager.clearAll();
+        balls.clear();
+        matches.clear();
+        cooldown.clear();
+        appearanceWarnings.clear();
+        exitGenerations.clear();
+        configReloading.set(false);
     }
 
     public static void save() {
+        saveVersion.incrementAndGet();
+        pendingConfig = null;
+        synchronized (SAVE_LOCK) {
+            try {
+                writeConfigAtomically(serializeConfig());
+            } catch (Exception error) {
+                plugin.getLogger().log(java.util.logging.Level.SEVERE, "无法保存足球系统配置", error);
+            }
+        }
+    }
+
+    public static void saveAsync() {
+        if (plugin == null || !plugin.isEnabled() || configReloading.get()) return;
+        saveVersion.incrementAndGet();
+        queueConfigSnapshot();
+    }
+
+    private static void queueConfigSnapshot() {
+        if (plugin == null || !plugin.isEnabled() || configReloading.get()) return;
+        if (!snapshotQueued.compareAndSet(false, true)) return;
+        FoliaScheduler.runGlobal(() -> {
+            long version = saveVersion.get();
+            try {
+                if (!configReloading.get()) {
+                    pendingConfig = new ConfigSnapshot(version, serializeConfig());
+                    queueConfigWriter();
+                }
+            } catch (Throwable error) {
+                plugin.getLogger().log(java.util.logging.Level.SEVERE, "无法创建足球系统配置快照", error);
+            } finally {
+                snapshotQueued.set(false);
+                if (!configReloading.get() && saveVersion.get() != version) queueConfigSnapshot();
+            }
+        });
+    }
+
+    private static void queueConfigWriter() {
+        if (!saveQueued.compareAndSet(false, true)) return;
+        FoliaScheduler.runAsync(() -> {
+            try {
+                while (true) {
+                    ConfigSnapshot snapshot = pendingConfig;
+                    pendingConfig = null;
+                    if (snapshot != null && snapshot.version == saveVersion.get() && !configReloading.get()) {
+                        synchronized (SAVE_LOCK) {
+                            writeConfigAtomically(snapshot.data);
+                        }
+                    }
+                    if (pendingConfig == null) break;
+                }
+            } catch (Exception error) {
+                plugin.getLogger().log(java.util.logging.Level.SEVERE, "Unable to save CubeBall configuration asynchronously", error);
+            } finally {
+                saveQueued.set(false);
+                if (pendingConfig != null) queueConfigWriter();
+            }
+        });
+    }
+
+    private static void writeConfigAtomically(String data) throws java.io.IOException {
+        Path file = plugin.getDataFolder().toPath().resolve("config.yml");
+        Files.createDirectories(file.getParent());
+        Path temp = file.resolveSibling("config.yml.tmp");
+        Files.writeString(temp, data, StandardCharsets.UTF_8,
+                StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+        try {
+            Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+        } catch (AtomicMoveNotSupportedException ignored) {
+            Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+        }
+    }
+
+    private static String serializeConfig() {
+        YamlConfiguration snapshot = new YamlConfiguration();
+        for (String key : plugin.getConfig().getKeys(false)) snapshot.set(key, plugin.getConfig().get(key));
         ConfigurationSection section = new MemoryConfiguration();
         for (Map.Entry<String, Match> match : matches.entrySet()) {
-            MemoryConfiguration m = new MemoryConfiguration();
-            match.getValue().getData().write(m);
-            section.set(match.getKey(), m);
+            MemoryConfiguration data = new MemoryConfiguration();
+            match.getValue().getData().write(data);
+            section.set(match.getKey(), data);
         }
-        plugin.getConfig().set("matches", section);
-        plugin.saveConfig();
+        snapshot.set("matches", section);
+        return snapshot.saveToString();
+    }
+
+    public static boolean reloadRuntimeSettings(Runnable success, Consumer<Throwable> failure) {
+        if (!(plugin instanceof CubeBall instance) || !configReloading.compareAndSet(false, true)) return false;
+        saveVersion.incrementAndGet();
+        pendingConfig = null;
+        FoliaScheduler.runAsync(() -> {
+            try {
+                YamlConfiguration loaded;
+                synchronized (SAVE_LOCK) {
+                    loaded = YamlConfiguration.loadConfiguration(instance.getDataFolder().toPath().resolve("config.yml").toFile());
+                    String language = loaded.getString("language", "en");
+                    I18n.init(instance, language == null ? "en" : language);
+                }
+                FoliaScheduler.runGlobal(() -> {
+                    try {
+                        if (!instance.isEnabled()) return;
+                        FileConfiguration active = instance.getConfig();
+                        for (String key : new HashSet<>(active.getKeys(false))) active.set(key, null);
+                        for (String key : loaded.getKeys(true)) {
+                            if (!loaded.isConfigurationSection(key)) active.set(key, loaded.get(key));
+                        }
+                        instance.applyRuntimeConfig();
+                        ResidenceBossBar.refreshAll();
+                        success.run();
+                    } catch (Throwable throwable) {
+                        failure.accept(throwable);
+                    } finally {
+                        configReloading.set(false);
+                    }
+                });
+            } catch (Throwable throwable) {
+                configReloading.set(false);
+                FoliaScheduler.runGlobal(() -> failure.accept(throwable));
+            }
+        });
+        return true;
+    }
+
+    private void applyRuntimeConfig() {
+        debugMode = getConfig().getBoolean("debug", false);
+        ballGlow = getConfig().getBoolean("ball.glow", true);
+        ballRollEnabled = getConfig().getBoolean("ball.roll.enabled", true);
+        ballRollSpeed = Math.max(0.0, getConfig().getDouble("ball.roll.speed", 1.0));
+        maxMatchPerPlayer = Math.max(1, getConfig().getInt("maxMatchPerPlayer", 3));
+        String identity = getConfig().getString("player-identity.mode", "name");
+        playerIdentityMode = identity != null && identity.equalsIgnoreCase("uuid") ? "uuid" : "name";
+        lobbySpawn = getConfig().getSerializable("lobbySpawn", Location.class);
+        exitSpawn = getConfig().getSerializable("exitSpawn", Location.class);
+        String residenceName = getConfig().getString("waitingLobby.residence", "zqc");
+        waitingLobbyResidence = residenceName == null ? "" : residenceName.trim();
+        bossBarRedTeam = normalizeBossBarTeamName(getConfig().getString("bossbar.redteam"), DEFAULT_BOSS_BAR_RED_TEAM);
+        bossBarBlueTeam = normalizeBossBarTeamName(getConfig().getString("bossbar.blueteam"), DEFAULT_BOSS_BAR_BLUE_TEAM);
+        VisualEffects.init(this);
+        if (!waitingLobbyResidence.isEmpty()) ResidenceHook.init();
     }
 
     public static void setDebugMode(boolean enabled) {
         debugMode = enabled;
         if (plugin != null) {
-            plugin.getConfig().set("debug", enabled);
-            plugin.saveConfig();
+            updateConfig("debug", enabled);
             plugin.getLogger().info("Debug mode " + (enabled ? "enabled" : "disabled"));
         }
     }
@@ -331,8 +483,7 @@ public class CubeBall extends JavaPlugin {
     public static void setBallGlow(boolean enabled) {
         ballGlow = enabled;
         if (plugin != null) {
-            plugin.getConfig().set("ball.glow", enabled);
-            plugin.saveConfig();
+            updateConfig("ball.glow", enabled);
             balls.values().forEach(ballData -> {
                 Entity carrier = ballData.getBall();
                 Display display = ballData.getDisplay();
@@ -349,8 +500,7 @@ public class CubeBall extends JavaPlugin {
     public static void setBallRollEnabled(boolean enabled) {
         ballRollEnabled = enabled;
         if (plugin != null) {
-            plugin.getConfig().set("ball.roll.enabled", enabled);
-            plugin.saveConfig();
+            updateConfig("ball.roll.enabled", enabled);
             plugin.getLogger().info("Ball roll " + (enabled ? "enabled" : "disabled"));
         }
     }
@@ -358,8 +508,7 @@ public class CubeBall extends JavaPlugin {
     public static void setBallRollSpeed(double speed) {
         ballRollSpeed = Math.max(0.0, speed);
         if (plugin != null) {
-            plugin.getConfig().set("ball.roll.speed", ballRollSpeed);
-            plugin.saveConfig();
+            updateConfig("ball.roll.speed", ballRollSpeed);
             plugin.getLogger().info("Ball roll speed set to " + ballRollSpeed);
         }
     }
@@ -399,8 +548,7 @@ public class CubeBall extends JavaPlugin {
 
     private static void saveBossBarTeam(String path, String name) {
         if (plugin != null) {
-            plugin.getConfig().set(path, name);
-            plugin.saveConfig();
+            updateConfig(path, name);
         }
         ResidenceBossBar.refreshAll();
     }
@@ -408,8 +556,7 @@ public class CubeBall extends JavaPlugin {
     public static void setLobbySpawn(Location location) {
         lobbySpawn = location == null ? null : location.clone();
         if (plugin != null) {
-            plugin.getConfig().set("lobbySpawn", lobbySpawn);
-            plugin.saveConfig();
+            updateConfig("lobbySpawn", lobbySpawn);
         }
     }
 
@@ -421,9 +568,41 @@ public class CubeBall extends JavaPlugin {
     public static void setExitSpawn(Location location) {
         exitSpawn = location == null ? null : location.clone();
         if (plugin != null) {
-            plugin.getConfig().set("exitSpawn", exitSpawn);
-            plugin.saveConfig();
+            updateConfig("exitSpawn", exitSpawn);
         }
+    }
+
+    private static void updateConfig(String path, Object value) {
+        FoliaScheduler.runGlobal(() -> {
+            if (plugin == null || !plugin.isEnabled()) return;
+            plugin.getConfig().set(path, value);
+            saveAsync();
+        });
+    }
+
+    public static boolean usesNameIdentity() {
+        return "name".equals(playerIdentityMode);
+    }
+
+    public static String getPlayerIdentityMode() {
+        return playerIdentityMode;
+    }
+
+    public static void setPlayerIdentityMode(String mode) {
+        playerIdentityMode = "uuid".equalsIgnoreCase(mode) ? "uuid" : "name";
+        updateConfig("player-identity.mode", playerIdentityMode);
+    }
+
+    public static boolean isMatchOwner(Player player, MatchData data) {
+        if (player == null || data == null) return false;
+        if (usesNameIdentity()) {
+            return data.creator != null && data.creator.equalsIgnoreCase(player.getName());
+        }
+        return data.creatorIdMost == player.getUniqueId().getMostSignificantBits()
+                && data.creatorIdLeast == player.getUniqueId().getLeastSignificantBits();
+    }
+
+    private record ConfigSnapshot(long version, String data) {
     }
 
     public static void restorePlayerAndExit(Player player) {
@@ -566,6 +745,7 @@ public class CubeBall extends JavaPlugin {
         FoliaScheduler.runGlobalTimer(() -> {
 
             ResidenceBossBar.tick();
+            JoinSignManager.tickWaitingPlayers();
 
             cooldown.entrySet().removeIf(entry -> {
                 long targetTime = entry.getValue();
@@ -578,6 +758,7 @@ public class CubeBall extends JavaPlugin {
             });
 
             for (Match match : matches.values()) {
+                match.maintainSpectatorStates();
                 Integer matchTimerValue = match.tickMatchTimer();
                 if (matchTimerValue != null) {
                     int matchTimer = matchTimerValue;
@@ -655,7 +836,7 @@ public class CubeBall extends JavaPlugin {
                     + " display=" + describeEntity(ballData.getDisplay()));
             ball.setVelocity(velocity);
             ball.setGravity(true);
-            ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_STONE_HIT, 10, 1);
+            VisualEffects.ballKick(ball);
             ballData.setPlayerCollisionTick(0);
             if (match != null) match.setLastTouchPlayer(ball, kicker);
         }
@@ -673,7 +854,7 @@ public class CubeBall extends JavaPlugin {
                 ball.setVelocity(velocity);
                 ball.setGravity(true);
                 if (!ballData.isWasOnGround()) {
-                    ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+                    VisualEffects.ballBounce(ball);
                 }
             }
         }
@@ -687,17 +868,17 @@ public class CubeBall extends JavaPlugin {
             if (zBouncing) {
                 ball.setVelocity(ball.getVelocity().setZ(-ballData.getLastVelocity().getZ()));
                 ball.getVelocity().setZ(-ballData.getLastVelocity().getZ());
-                ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+                VisualEffects.ballBounce(ball);
             }
             if (xBouncing) {
                 ball.setVelocity(ball.getVelocity().setX(-ballData.getLastVelocity().getX()));
                 ball.getVelocity().setX(-ballData.getLastVelocity().getX());
-                ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+                VisualEffects.ballBounce(ball);
             }
             if (yBouncing) {
                 ball.setGravity(true);
                 ball.setVelocity(ball.getVelocity().setY(-ballData.getLastVelocity().getY()));
-                ball.getWorld().playSound(ball.getLocation(), Sound.BLOCK_WOOL_HIT, 10, 1);
+                VisualEffects.ballBounce(ball);
             }
         }
 
@@ -710,6 +891,8 @@ public class CubeBall extends JavaPlugin {
         if (displayMode) {
             tickDisplayRoll(ballData);
         }
+
+        VisualEffects.ballTrail(ball, ballData.getPlayerCollisionTick());
 
         ballData.setLastVelocity(ball.getVelocity().clone());
         ballData.setPlayerCollisionTick(ballData.getPlayerCollisionTick() + 1);
@@ -733,7 +916,7 @@ public class CubeBall extends JavaPlugin {
         if (entity == null) return;
         entity.setCustomName("CubeBall");
         entity.setCustomNameVisible(false);
-        entity.setPersistent(true);
+        entity.setPersistent(false);
     }
 
     private static void tickDisplayRoll(Ball ballData) {

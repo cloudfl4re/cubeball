@@ -1,6 +1,6 @@
 package me.crylonz;
 
-import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import com.github.squi2rel.cb.util.TaskHandle;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.entity.Display;
 import org.bukkit.entity.Entity;
@@ -13,7 +13,7 @@ public class Ball {
     private Entity ball;
     private Vector lastVelocity;
     private int playerCollisionTick;
-    private ScheduledTask physicsTask;
+    private TaskHandle physicsTask;
     /** CE 物品模式下挂载的 ItemDisplay；物理载体为 Item。 */
     private Display display;
     /** 落地判断用的载体 BlockData；仅 CE 方块模式设置，纯原版/物品模式保持 null。 */
@@ -58,7 +58,7 @@ public class Ball {
         this.playerCollisionTick = playerCollisionTick;
     }
 
-    public void setPhysicsTask(ScheduledTask physicsTask) {
+    public void setPhysicsTask(TaskHandle physicsTask) {
         this.physicsTask = physicsTask;
     }
 

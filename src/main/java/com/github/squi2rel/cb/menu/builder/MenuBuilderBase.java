@@ -1,10 +1,13 @@
 package com.github.squi2rel.cb.menu.builder;
 
-import org.bukkit.ChatColor;
 import org.bukkit.Material;
 import org.bukkit.inventory.Inventory;
+import org.bukkit.inventory.ItemFlag;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.inventory.meta.ItemMeta;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 
 import java.util.Arrays;
 import java.util.Objects;
@@ -12,6 +15,8 @@ import java.util.stream.Collectors;
 
 @SuppressWarnings("unused")
 class MenuBuilderBase {
+    private static final LegacyComponentSerializer LEGACY = LegacyComponentSerializer.legacySection();
+
     protected String title;
     protected int row;
     protected String prefix = "", lorePrefix = "";
@@ -36,10 +41,21 @@ class MenuBuilderBase {
         Material type = stack.getType();
         if (type == null || type.isAir()) return;
         ItemMeta meta = Objects.requireNonNull(stack.getItemMeta());
-        meta.setDisplayName(ChatColor.RESET + item.getPrefix() + item.getName());
+        meta.displayName(component(item.getPrefix() + item.getName()));
         String desc = item.getDesc();
-        if (desc != null) meta.setLore(Arrays.stream(desc.split("\n")).map(s -> ChatColor.RESET + item.getLorePrefix() + s).collect(Collectors.toList()));
+        if (desc != null) {
+            meta.lore(Arrays.stream(desc.split("\n", -1))
+                    .map(s -> component(item.getLorePrefix() + s))
+                    .collect(Collectors.toList()));
+        }
+        meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES, ItemFlag.HIDE_ADDITIONAL_TOOLTIP);
+        if (item.isGlowing()) meta.setEnchantmentGlintOverride(true);
         stack.setItemMeta(meta);
         inventory.setItem(i, stack);
+    }
+
+    private static Component component(String input) {
+        String value = input == null ? "" : input.replace('&', '\u00a7');
+        return LEGACY.deserialize(value).decoration(TextDecoration.ITALIC, false);
     }
 }

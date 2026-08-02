@@ -3,10 +3,12 @@ package com.github.squi2rel.cb;
 import com.github.squi2rel.cb.menu.SettingsMenu;
 import com.github.squi2rel.cb.menu.builder.MenuManager;
 import com.github.squi2rel.cb.util.FoliaScheduler;
+import me.crylonz.PlayerStateCache;
 import me.crylonz.CubeBall;
 import me.crylonz.CraftEngineHook;
 import me.crylonz.JoinSignManager;
 import me.crylonz.Match;
+import org.bukkit.Bukkit;
 import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
@@ -17,91 +19,129 @@ import org.jetbrains.annotations.NotNull;
 
 import java.util.ArrayList;
 import java.util.List;
+import java.util.UUID;
 
 public class CCBCommand implements CommandExecutor, TabCompleter {
     @Override
     public boolean onCommand(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
+        if (args.length > 0 && args[0].equalsIgnoreCase("help")) {
+            sendHelp(sender);
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("input")) {
+            if (!(sender instanceof Player player)) {
+                sender.sendMessage(I18n.get("command_player_only"));
+                return true;
+            }
+            if (args.length < 2) {
+                sender.sendMessage(I18n.get("input_usage"));
+                return true;
+            }
+            String input = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
+            if (!MenuManager.submitInput(player, input)) {
+                sender.sendMessage(I18n.get("input_none"));
+            }
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("reload")) {
+            if (!sender.hasPermission("cubeball.admin")) {
+                sendCommandMessage(sender, I18n.get("command_no_permission"));
+                return true;
+            }
+            boolean started = CubeBall.reloadRuntimeSettings(
+                    () -> sendCommandMessage(sender, I18n.get("reload_success")),
+                    error -> {
+                        CubeBall.plugin.getLogger().log(java.util.logging.Level.SEVERE, "Failed to reload CubeBall configuration", error);
+                        sendCommandMessage(sender, I18n.get("reload_failed"));
+                    });
+            sendCommandMessage(sender, I18n.get(started ? "reload_started" : "reload_running"));
+            return true;
+        }
+        if (args.length > 0 && args[0].equalsIgnoreCase("check")) {
+            handleCheck(sender, args);
+            return true;
+        }
         if (args.length > 0 && args[0].equalsIgnoreCase("debug")) {
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             boolean enabled = args.length == 1 ? !CubeBall.debugMode : parseToggle(args[1], CubeBall.debugMode);
             CubeBall.setDebugMode(enabled);
-            sender.sendMessage("[CCB] Debug mode " + (enabled ? "enabled" : "disabled"));
+            sender.sendMessage(systemMessage("Debug mode " + (enabled ? "enabled" : "disabled")));
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("glow")) {
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             boolean enabled = args.length == 1 ? !CubeBall.ballGlow : parseToggle(args[1], CubeBall.ballGlow);
             CubeBall.setBallGlow(enabled);
-            sender.sendMessage("[CCB] Ball glow " + (enabled ? "enabled" : "disabled"));
+            sender.sendMessage(systemMessage("Ball glow " + (enabled ? "enabled" : "disabled")));
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("roll")) {
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             if (args.length >= 2 && args[1].equalsIgnoreCase("speed")) {
                 if (args.length < 3) {
-                    sender.sendMessage("[CCB] Usage: /ccb roll speed <number>");
+                    sender.sendMessage(systemMessage("Usage: /ccb roll speed <number>"));
                     return true;
                 }
                 double speed = tryParseDouble(args[2], CubeBall.ballRollSpeed);
                 CubeBall.setBallRollSpeed(speed);
-                sender.sendMessage("[CCB] Ball roll speed set to " + CubeBall.ballRollSpeed);
+                sender.sendMessage(systemMessage("Ball roll speed set to " + CubeBall.ballRollSpeed));
                 return true;
             }
             boolean enabled = args.length == 1 ? !CubeBall.ballRollEnabled : parseToggle(args[1], CubeBall.ballRollEnabled);
             CubeBall.setBallRollEnabled(enabled);
-            sender.sendMessage("[CCB] Ball roll " + (enabled ? "enabled" : "disabled"));
+            sender.sendMessage(systemMessage("Ball roll " + (enabled ? "enabled" : "disabled")));
             return true;
         }
         if (args.length > 0 && (args[0].equalsIgnoreCase("redteam") || args[0].equalsIgnoreCase("blueteam"))) {
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             if (args.length < 2) {
-                sender.sendMessage("[CCB] Usage: /ccb " + args[0].toLowerCase() + " <name>");
+                sender.sendMessage(systemMessage("Usage: /ccb " + args[0].toLowerCase() + " <name>"));
                 return true;
             }
             String name = String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
             if (args[0].equalsIgnoreCase("redteam")) {
                 CubeBall.setBossBarRedTeam(name);
-                sender.sendMessage("[CCB] BossBar red team set to " + CubeBall.getBossBarRedTeam());
+                sender.sendMessage(systemMessage("BossBar red team set to " + CubeBall.getBossBarRedTeam()));
             } else {
                 CubeBall.setBossBarBlueTeam(name);
-                sender.sendMessage("[CCB] BossBar blue team set to " + CubeBall.getBossBarBlueTeam());
+                sender.sendMessage(systemMessage("BossBar blue team set to " + CubeBall.getBossBarBlueTeam()));
             }
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("setballhand")) {
             if (!(sender instanceof Player)) {
-                sender.sendMessage("[CCB] This command can only be used by a player.");
+                sender.sendMessage(I18n.get("command_player_only"));
                 return true;
             }
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             if (args.length < 2) {
-                sender.sendMessage("[CCB] Usage: /ccb setballhand <match>");
+                sender.sendMessage(systemMessage("Usage: /ccb setballhand <match>"));
                 return true;
             }
             Match match = CubeBall.matches.get(args[1]);
             if (match == null) {
-                sender.sendMessage("[CCB] Match not found: " + args[1]);
+                sender.sendMessage(systemMessage("Match not found: " + args[1]));
                 return true;
             }
             Player player = (Player) sender;
             ItemStack hand = player.getInventory().getItemInMainHand();
             if (hand == null || hand.getType().isAir()) {
-                sender.sendMessage("[CCB] Hold an item in your main hand first.");
+                sender.sendMessage(systemMessage("Hold an item in your main hand first."));
                 return true;
             }
             ItemStack snapshot = hand.clone();
@@ -109,26 +149,26 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             String id = CraftEngineHook.getCustomItemId(hand);
             match.getData().ballCustomId = id;
             match.getData().ballCustomItem = snapshot;
-            CubeBall.save();
+            CubeBall.saveAsync();
             CubeBall.debug("command setballhand match=" + match.getName()
                     + " id=" + id
                     + " item=" + CubeBall.describeItem(snapshot));
-            sender.sendMessage("[CCB] Ball item snapshot saved for " + match.getName()
-                    + " (" + (id == null ? snapshot.getType().name() : id) + ")");
+            sender.sendMessage(systemMessage("Ball item snapshot saved for " + match.getName()
+                    + " (" + (id == null ? snapshot.getType().name() : id) + ")"));
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("setballce")) {
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             if (args.length < 3) {
-                sender.sendMessage("[CCB] Usage: /ccb setballce <match> <namespace:id|clear>");
+                sender.sendMessage(systemMessage("Usage: /ccb setballce <match> <namespace:id|clear>"));
                 return true;
             }
             Match match = CubeBall.matches.get(args[1]);
             if (match == null) {
-                sender.sendMessage("[CCB] Match not found: " + args[1]);
+                sender.sendMessage(systemMessage("Match not found: " + args[1]));
                 return true;
             }
 
@@ -136,14 +176,14 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             if (id.equalsIgnoreCase("clear") || id.equalsIgnoreCase("none") || id.equalsIgnoreCase("off")) {
                 match.getData().ballCustomId = null;
                 match.getData().ballCustomItem = null;
-                CubeBall.save();
+                CubeBall.saveAsync();
                 CubeBall.debug("command setballce cleared match=" + match.getName());
-                sender.sendMessage("[CCB] CraftEngine ball cleared for " + match.getName());
+                sender.sendMessage(systemMessage("CraftEngine ball cleared for " + match.getName()));
                 return true;
             }
 
             if (!looksLikeCustomId(id)) {
-                sender.sendMessage("[CCB] Invalid CraftEngine id. Use namespace:id, for example daoju:jiangbei");
+                sender.sendMessage(systemMessage("Invalid CraftEngine id. Use namespace:id, for example daoju:jiangbei"));
                 return true;
             }
 
@@ -151,20 +191,20 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             if (CraftEngineHook.isAvailable()) {
                 found = CraftEngineHook.hasCustomContent(id);
                 if (!found) {
-                    sender.sendMessage("[CCB] Warning: CraftEngine did not resolve " + id + "; saved anyway for runtime fallback/debug.");
+                    sender.sendMessage(systemMessage("Warning: CraftEngine did not resolve " + id + "; saved anyway for runtime fallback/debug."));
                 }
             } else {
-                sender.sendMessage("[CCB] Warning: CraftEngine is not installed; saved id anyway.");
+                sender.sendMessage(systemMessage("Warning: CraftEngine is not installed; saved id anyway."));
             }
 
             match.getData().ballCustomId = id;
             match.getData().ballCustomItem = null;
-            CubeBall.save();
+            CubeBall.saveAsync();
             CubeBall.debug("command setballce match=" + match.getName()
                     + " id=" + id
                     + " found=" + found
                     + " itemSnapshotCleared=true");
-            sender.sendMessage("[CCB] CraftEngine ball set for " + match.getName() + ": " + id);
+            sender.sendMessage(systemMessage("CraftEngine ball set for " + match.getName() + ": " + id));
             return true;
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("votepause")) {
@@ -212,7 +252,8 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
                 return true;
             }
             String matchName = args.length == 1 ? null : String.join(" ", java.util.Arrays.copyOfRange(args, 1, args.length));
-            Match match = resolveActiveMatch(sender, matchName);
+            boolean forceEnd = args[0].equalsIgnoreCase("end");
+            Match match = forceEnd ? resolveEndMatch(sender, matchName) : resolveActiveMatch(sender, matchName);
             if (match == null) return true;
             FoliaScheduler.runGlobal(() -> {
                 String result;
@@ -230,11 +271,11 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("spawn")) {
             if (!(sender instanceof Player player)) {
-                sender.sendMessage("[CCB] This command can only be used by a player.");
+                sender.sendMessage(I18n.get("command_player_only"));
                 return true;
             }
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             CubeBall.setLobbySpawn(player.getLocation());
@@ -243,11 +284,11 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("exitspawn")) {
             if (!(sender instanceof Player player)) {
-                sender.sendMessage("[CCB] This command can only be used by a player.");
+                sender.sendMessage(I18n.get("command_player_only"));
                 return true;
             }
             if (!sender.hasPermission("cubeball.admin")) {
-                sender.sendMessage("You do not have permission to do this!");
+                sender.sendMessage(I18n.get("command_no_permission"));
                 return true;
             }
             CubeBall.setExitSpawn(player.getLocation());
@@ -256,7 +297,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
         }
         if (args.length > 0 && args[0].equalsIgnoreCase("join")) {
             if (!(sender instanceof Player player)) {
-                sender.sendMessage("[CCB] This command can only be used by a player.");
+                sender.sendMessage(I18n.get("command_player_only"));
                 return true;
             }
             handleJoin(player, args);
@@ -268,7 +309,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             return true;
         }
         Player player = (Player) sender;
-        SettingsMenu.settings.sendTo(player);
+        SettingsMenu.open(player);
         return true;
     }
 
@@ -293,6 +334,55 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             player.sendMessage(I18n.format("join_list_entry", "match", name));
         }
         player.sendMessage(I18n.get("join_usage"));
+    }
+
+    private void handleCheck(CommandSender sender, String[] args) {
+        if (!sender.hasPermission("cubeball.admin")) {
+            sendCommandMessage(sender, I18n.get("command_no_permission"));
+            return;
+        }
+        if (args.length != 2) {
+            sendCommandMessage(sender, I18n.get("check_usage"));
+            return;
+        }
+
+        String identifier = args[1];
+        UUID playerId = parseUuid(identifier);
+        Player player = playerId == null ? Bukkit.getPlayerExact(identifier) : Bukkit.getPlayer(playerId);
+        if (player == null) {
+            if (playerId != null && PlayerStateCache.has(playerId)) {
+                sendCommandMessage(sender, I18n.format("check_backup_waiting", "player", identifier));
+            } else {
+                sendCommandMessage(sender, I18n.format("check_player_offline", "player", identifier));
+            }
+            return;
+        }
+
+        FoliaScheduler.runEntity(player, () -> {
+            if (!player.isOnline()) {
+                sendCommandMessage(sender, I18n.format("check_player_offline", "player", identifier));
+                return;
+            }
+            UUID targetId = player.getUniqueId();
+            if (!PlayerStateCache.has(targetId)) {
+                sendCommandMessage(sender, I18n.format("check_no_backup", "player", player.getName()));
+                return;
+            }
+            PlayerStateCache.restore(player);
+            sendCommandMessage(sender, I18n.format("check_restored", "player", player.getName()));
+        }, () -> sendCommandMessage(sender, I18n.format("check_player_offline", "player", identifier)));
+    }
+
+    private UUID parseUuid(String value) {
+        try {
+            return UUID.fromString(value);
+        } catch (IllegalArgumentException ignored) {
+            return null;
+        }
+    }
+
+    private String systemMessage(String message) {
+        return I18n.get("system_prefix") + message;
     }
 
     private boolean parseToggle(String value, boolean fallback) {
@@ -354,6 +444,10 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             }
             return match;
         }
+        if (sender instanceof Player player) {
+            Match playerMatch = findActivePlayerMatch(player);
+            if (playerMatch != null) return playerMatch;
+        }
         Match found = null;
         for (Match match : CubeBall.matches.values()) {
             if (!match.isInProgress()) continue;
@@ -367,6 +461,46 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
         return found;
     }
 
+    private Match resolveEndMatch(CommandSender sender, String name) {
+        if (name != null && !name.isBlank()) {
+            Match match = CubeBall.matches.get(name);
+            if (match == null) {
+                sendCommandMessage(sender, I18n.format("match_not_found", "match", name));
+                return null;
+            }
+            if (!match.canForceEnd()) {
+                sendCommandMessage(sender, I18n.get("match_not_active"));
+                return null;
+            }
+            return match;
+        }
+        if (sender instanceof Player player) {
+            Match playerMatch = findEndablePlayerMatch(player);
+            if (playerMatch != null) return playerMatch;
+        }
+        Match found = null;
+        for (Match match : CubeBall.matches.values()) {
+            if (!match.canForceEnd()) continue;
+            if (found != null) {
+                sendCommandMessage(sender, I18n.get("match_name_required"));
+                return null;
+            }
+            found = match;
+        }
+        if (found == null) sendCommandMessage(sender, I18n.get("match_not_active"));
+        return found;
+    }
+
+    private Match findEndablePlayerMatch(Player player) {
+        Match found = null;
+        for (Match match : CubeBall.matches.values()) {
+            if (!match.canForceEnd() || !match.containsPlayer(player)) continue;
+            if (found != null) return null;
+            found = match;
+        }
+        return found;
+    }
+
     private void sendCommandMessage(CommandSender sender, String message) {
         if (sender instanceof Player player) {
             FoliaScheduler.runEntity(player, () -> player.sendMessage(message));
@@ -375,16 +509,34 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void sendHelp(CommandSender sender) {
+        sendCommandMessage(sender, I18n.get("help_header"));
+        sendCommandMessage(sender, I18n.get("help_open"));
+        sendCommandMessage(sender, I18n.get("help_join"));
+        sendCommandMessage(sender, I18n.get("help_input"));
+        if (sender.hasPermission("cubeball.timeout")) sendCommandMessage(sender, I18n.get("help_timeout"));
+        if (sender.hasPermission("cubeball.admin")) {
+            sendCommandMessage(sender, I18n.get("help_admin_check"));
+            sendCommandMessage(sender, I18n.get("help_admin_spawn"));
+            sendCommandMessage(sender, I18n.get("help_admin_match"));
+            sendCommandMessage(sender, I18n.get("help_admin_visual"));
+            sendCommandMessage(sender, I18n.get("help_admin_reload"));
+        }
+        sendCommandMessage(sender, I18n.get("help_footer"));
+    }
+
     @Override
     public List<String> onTabComplete(@NotNull CommandSender sender, @NotNull Command command, @NotNull String label, @NotNull String[] args) {
         if (args.length == 1) {
             ArrayList<String> values = new ArrayList<>();
+            values.add("help");
             values.add("join");
+            values.add("input");
             if (sender.hasPermission("cubeball.timeout")
                     && sender instanceof Player player
                     && (findActivePlayerMatch(player) != null || findPauseVoteMatch(player) != null)) values.add("votepause");
             if (sender.hasPermission("cubeball.admin")) {
-                values.addAll(List.of("debug", "glow", "roll", "redteam", "blueteam", "setballhand", "setballce", "spawn", "exitspawn", "pause", "resume", "end"));
+                values.addAll(List.of("check", "reload", "debug", "glow", "roll", "redteam", "blueteam", "setballhand", "setballce", "spawn", "exitspawn", "pause", "resume", "end"));
             }
             return filter(args[0], values);
         }

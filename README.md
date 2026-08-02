@@ -1,69 +1,63 @@
-# cubeball
+# CubeCubeBall 1.1.1
 
-cubeball 是一个 Minecraft 足球插件，玩家可以用方块足球进行比赛。本分支基于原项目修改，目标运行环境为 Folia `1.21.11`。
+CubeCubeBall 是一个支持 Folia、Luminol 和 Paper 1.21.11 的方块足球小游戏插件。本版本在原项目基础上重做了管理 GUI、修复了分页与输入边界，并增加了完整的比赛视觉与音效反馈。
 
-## 主要改动
-
-- 依赖更新为 Paper API `1.21.11-R0.1-SNAPSHOT`
-- `plugin.yml` 添加 `folia-supported: true`
-- 调度逻辑改为 Folia/Paper 的 Global、Region、Entity Scheduler
-- 权限节点包括 `cubeball.manage`、`cubeball.admin`、默认开启的 `cubeball.timeout` 和 OP 默认拥有的 `cubeball.commandbypass`
-- 构建目标更新为 Java 21
-
-## 环境要求
-
-- Folia `1.21.11`
-- Java 21 或更高版本
-- Maven 3.9+
-
-## 构建
-
-```bash
-mvn package
-```
-
-构建完成后，插件文件位于：
-
-```text
-target/cubeball-1.0.0.jar
-```
+作者：xWtree<br>
+原作者与贡献者：Crylonz、squi2rel、cloudfl4re<br>
+网站：[github.com/mcxqk](https://github.com/mcxqk)<br>
+许可证：GNU GPL v3，详见 `LICENSE`。
 
 ## 安装
 
-1. 将 `target/cubeball-1.0.0.jar` 放入 Folia 服务端的 `plugins` 目录。
-2. 启动或重启服务端。
-3. 在游戏内使用 `/ccb` 打开管理菜单。
+1. 使用 Java 21 或更高版本运行服务器。
+2. 将 `target/cubeball-1.1.1.jar` 放入服务器的 `plugins` 目录。
+3. 启动服务器后，管理员使用 `/ccb help` 查看指令，使用 `/ccb` 打开管理中心。
+4. 如果安装了 CraftEngine、Residence、Emotecraft 或 BodySize，插件会自动启用对应联动；它们都是可选依赖。
 
-## 命令
+## 常用指令
 
-| 命令 | 权限 | 说明 |
+| 指令 | 权限 | 用途 |
 | --- | --- | --- |
-| `/ccb` | `cubeball.manage` | 打开 cubeball 管理菜单 |
-| `/ccb spawn` | `cubeball.admin` | 设置比赛等待大厅传送点 |
-| `/ccb exitspawn` | `cubeball.admin` | 设置比赛结束、等待大厅或观众退出后的传送点 |
-| `/ccb pause [比赛名]` | `cubeball.admin` | 管理员无限期技术暂停当前比赛 |
-| `/ccb resume [比赛名]` | `cubeball.admin` | 结束暂停并以 3 秒倒计时继续比赛 |
-| `/ccb end [比赛名]` | `cubeball.admin` | 按当前比分强制结束比赛，不进入加时 |
-| `/ccb votepause 5\|10` | `cubeball.timeout` | 发起本队 5 或 10 分钟暂停投票 |
-| `/ccb votepause yes\|no` | `cubeball.timeout` | 对当前暂停投票表决 |
+| `/ccb help` | 无 | 查看帮助 |
+| `/ccb` | `cubeball.manage` | 打开管理中心 |
+| `/ccb input <内容>` | 无 | 客户端聊天关闭时提交 GUI 输入；输入 `T` 取消 |
+| `/ccb join [场地]` | 无 | 加入等待大厅；省略场地时会列出可用场地 |
+| `/ccb reload` | `cubeball.admin` | 异步热加载语言、视觉、音效和通用配置 |
+| `/ccb check <玩家名或 UUID>` | `cubeball.admin` | 检查在线玩家的背包备份并覆盖恢复；离线备份会保留 |
+| `/ccb spawn` | `cubeball.admin` | 设置等待大厅传送点 |
+| `/ccb exitspawn` | `cubeball.admin` | 设置比赛结束与退出传送点 |
+| `/ccb pause [场地]` | `cubeball.admin` | 管理员技术暂停 |
+| `/ccb resume [场地]` | `cubeball.admin` | 恢复暂停中的比赛 |
+| `/ccb end [场地]` | `cubeball.admin` | 强制结束比赛；未开赛时取消已扫描玩家 |
+| `/ccb votepause <5\|10\|yes\|no>` | `cubeball.timeout` | 发起或参与暂停投票 |
 
-管理员命令省略比赛名时，仅在服务器上恰好有一场活动比赛时自动选择；存在多场活动比赛时请显式填写比赛名。暂停期间不会继续比赛计时或保留当前足球，当前回合直接结束且不计分；管理员暂停没有自动恢复时间，使用 `/ccb resume` 后固定进行 3 秒倒计时。管理员也可以在任何暂停阶段使用 `/ccb end` 强制结束比赛。
+## GUI 使用
 
-比赛进行中通过告示牌加入时会自动传送到等待大厅并作为观众加入；明确退出等待大厅或观众席会传送到 `exitSpawn`。等待大厅倒计时失败时，在线玩家也会自动传出。
+- 首页提供创建场地、场地列表、等待大厅位置、退出位置、足球发光和滚动动画开关。
+- 场地列表支持上一页和下一页，场地图标会显示未配置、已就绪、比赛中或加时赛状态。
+- 场地配置页分为队伍出生点、球门区域、足球出生点、足球方块、CraftEngine 外观、冲刺冷却、比赛时间和目标分数。
+- 出生点支持左键添加、右键移除最后一个、Shift + 右键清空；每队最多 20 个。
+- 球门使用石铲左键选择第一个角、右键选择第二个角；再次点击对应菜单项可清空区域。
+- 所有聊天输入都可以输入 `T` 取消，输入错误时会返回当前菜单。
+- 删除场地必须在确认页面再次点击，避免误操作。
+- 比赛开始后场地配置会锁定，只能查看比分或终止比赛。
 
-拥有 `cubeball.commandbypass` 权限的玩家可以绕过参赛期间和等待大厅期间的命令拦截，但该权限不会授予被执行命令本身所需的权限，也不会解除比赛期间的 BodySize 保护。
+## 热加载说明
 
-参赛者每队每场比赛只有一次成功的暂停额度。使用 `/ccb votepause 5` 或 `/ccb votepause 10` 发起投票，投票通过后立即结束当前回合且不计分，并暂停对应时长；暂停到期后自动进行 3 秒倒计时继续。暂停期间管理员可以使用 `/ccb pause` 接管为无限期技术暂停，但该队已使用的暂停额度不会恢复。投票失败或超时不会消耗额度。
+`/ccb reload` 会异步读取配置和语言文件，再在全局上下文应用通用设置。它会热加载：语言、创建数量上限、BossBar 队名、大厅/退出位置、足球发光与滚动、视觉粒子和音效开关。正在进行的比赛和 `matches` 场地数据不会被替换，以免热加载造成比赛中断。
 
-## 权限
+## 玩家识别
 
-| 权限 | 默认 | 说明 |
-| --- | --- | --- |
-| `cubeball.manage` | OP | 允许打开管理菜单 |
-| `cubeball.admin` | OP | 允许管理所有比赛和高级设置 |
-| `cubeball.timeout` | true | 允许参赛者发起和参与暂停投票 |
-| `cubeball.commandbypass` | OP | 允许绕过比赛和等待大厅期间的命令限制 |
+`config.yml` 的 `player-identity.mode` 支持 `name` 和 `uuid`，默认使用适合离线服的 `name`。正版服可改成 `uuid`，也可以在管理中心右下角直接切换；该设置支持 `/ccb reload` 热加载。
 
-## 许可证
+## 视觉配置
 
-本项目遵循 GNU General Public License v3.0。修改和分发时请保留许可证文本以及原作者信息。
+`config.yml` 已为每一项加入中文注释。`visuals.enabled` 是总开关，下面的分项开关可以分别控制菜单音效、场地设置反馈、大厅反馈、比赛反馈、足球碰撞反馈、进球效果和足球运动尾迹。高人数服务器可以将 `ball-trail.interval-ticks` 调大，或关闭 `ball-trail.enabled`。
+
+## 构建
+
+```text
+mvn -Dmaven.repo.local=<可写缓存目录> package
+```
+
+构建产物：`target/cubeball-1.1.1.jar`。项目使用 Paper API 1.21.11、Java 21，并通过统一调度封装兼容 Folia 与 Paper。

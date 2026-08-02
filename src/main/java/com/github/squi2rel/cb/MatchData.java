@@ -8,10 +8,10 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.BoundingBox;
 
-import java.util.ArrayList;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public class MatchData {
     public String creator;
@@ -32,10 +32,10 @@ public class MatchData {
     public Location redTeamGoalPos1;
     public Location redTeamGoalPos2;
 
-    public List<Location> blueTeamGoalBlocks = new ArrayList<>();
-    public List<Location> redTeamGoalBlocks = new ArrayList<>();
-    public List<Location> blueTeamSpawns = new ArrayList<>();
-    public List<Location> redTeamSpawns = new ArrayList<>();
+    public List<Location> blueTeamGoalBlocks = new CopyOnWriteArrayList<>();
+    public List<Location> redTeamGoalBlocks = new CopyOnWriteArrayList<>();
+    public List<Location> blueTeamSpawns = new CopyOnWriteArrayList<>();
+    public List<Location> redTeamSpawns = new CopyOnWriteArrayList<>();
 
     public void write(ConfigurationSection config) {
         config.set("creator", creator);
@@ -71,9 +71,9 @@ public class MatchData {
         ballCustomId = config.getString("ballCustomId");
         ballCustomItem = config.getItemStack("ballCustomItem");
         if (ballCustomItem != null) ballCustomItem.setAmount(1);
-        matchDuration = config.getInt("matchDuration");
-        maxGoal = config.getInt("maxGoal");
-        dashCooldown = config.getInt("dashCooldown");
+        matchDuration = Math.max(30, config.getInt("matchDuration", matchDuration));
+        maxGoal = Math.max(0, config.getInt("maxGoal", maxGoal));
+        dashCooldown = Math.max(0, config.getInt("dashCooldown", dashCooldown));
 
         ballSpawn = config.getSerializable("ballSpawn", Location.class);
         blueTeamGoalPos1 = config.getSerializable("blueTeamGoalPos1", Location.class);
@@ -96,9 +96,35 @@ public class MatchData {
     }
 
     public static MatchData from(ConfigurationSection config) {
+        if (config == null) throw new IllegalArgumentException("比赛配置节点不能为空");
         MatchData instance = new MatchData();
         instance.read(config);
         return instance;
+    }
+
+    public boolean isConfiguredForStart() {
+        if (ballSpawn == null || ballSpawn.getWorld() == null
+                || blueTeamSpawns.isEmpty() || redTeamSpawns.isEmpty()
+                || !hasBlueTeamGoalArea() || !hasRedTeamGoalArea()) return false;
+        World world = ballSpawn.getWorld();
+        return locationsBelongTo(world, blueTeamSpawns)
+                && locationsBelongTo(world, redTeamSpawns)
+                && goalBelongsTo(world, blueTeamGoalPos1, blueTeamGoalPos2, blueTeamGoalBlocks)
+                && goalBelongsTo(world, redTeamGoalPos1, redTeamGoalPos2, redTeamGoalBlocks);
+    }
+
+    private static boolean goalBelongsTo(World world, Location first, Location second, List<Location> legacy) {
+        if (hasRegion(first, second)) {
+            return Objects.equals(world, first.getWorld()) && Objects.equals(world, second.getWorld());
+        }
+        return !legacy.isEmpty() && locationsBelongTo(world, legacy);
+    }
+
+    private static boolean locationsBelongTo(World world, List<Location> locations) {
+        for (Location location : locations) {
+            if (location == null || !Objects.equals(world, location.getWorld())) return false;
+        }
+        return true;
     }
 
     public static Material getMaterial(String material) {
@@ -258,8 +284,8 @@ public class MatchData {
     }
 
     @SuppressWarnings("unchecked")
-    public static ArrayList<Location> getLocations(ConfigurationSection config, String path) {
+    public static List<Location> getLocations(ConfigurationSection config, String path) {
         List<Location> list = (List<Location>) config.getList(path);
-        return list == null ? new ArrayList<>() : new ArrayList<>(list);
+        return list == null ? new CopyOnWriteArrayList<>() : new CopyOnWriteArrayList<>(list);
     }
 }

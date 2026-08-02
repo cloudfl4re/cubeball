@@ -1,5 +1,6 @@
 package me.crylonz;
 
+import com.github.squi2rel.cb.util.FoliaScheduler;
 import org.bukkit.GameMode;
 import org.bukkit.NamespacedKey;
 import org.bukkit.Registry;
@@ -12,7 +13,19 @@ import org.bukkit.inventory.PlayerInventory;
 import org.bukkit.plugin.Plugin;
 
 import java.io.File;
-import java.io.IOException;
+import java.io.StringReader;
+import java.nio.file.AtomicMoveNotSupportedException;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.StandardCopyOption;
+import java.nio.file.StandardOpenOption;
+import java.util.Map;
+import java.util.UUID;
+import java.util.concurrent.CompletableFuture;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicLong;
+import java.util.function.Consumer;
 import java.util.logging.Level;
 
 /**
@@ -26,13 +39,34 @@ public final class PlayerStateCache {
     }
 
     private static Plugin plugin;
+    private static volatile boolean active;
     private static File backupDir;
+    private static final Map<UUID, BackupRecord> backups = new ConcurrentHashMap<>();
+    private static final Map<UUID, CompletableFuture<Void>> ioTails = new ConcurrentHashMap<>();
+    private static final AtomicLong backupVersion = new AtomicLong(System.currentTimeMillis());
+    private static final AtomicLong lifecycleGeneration = new AtomicLong();
 
     public static void init(Plugin p) {
         plugin = p;
+        active = true;
+        lifecycleGeneration.incrementAndGet();
         backupDir = new File(p.getDataFolder(), "inv_backup");
         if (!backupDir.exists()) {
             backupDir.mkdirs();
+        }
+        backups.clear();
+        ioTails.clear();
+        File[] files = backupDir.listFiles((dir, name) -> name.endsWith(".yml"));
+        if (files != null) {
+            for (File file : files) {
+                try {
+                    UUID uuid = UUID.fromString(file.getName().substring(0, file.getName().length() - 4));
+                    backups.put(uuid, BackupRecord.loaded(
+                            Files.readString(file.toPath(), StandardCharsets.UTF_8), backupVersion.incrementAndGet()));
+                } catch (Exception ignored) {
+                    p.getLogger().warning("无法读取玩家备份文件: " + file.getName());
+                }
+            }
         }
     }
 
@@ -42,39 +76,60 @@ public final class PlayerStateCache {
 
     /** 将玩家当前状态写入文件（已有备份则跳过，防止多轮覆盖原始背包）。 */
     public static void save(Player player) {
-        if (player == null || plugin == null) return;
-        File file = fileFor(player);
-        if (file.exists()) return; // 幂等：已有备份不覆盖
+        saveThen(player, () -> {
+        }, error -> {
+        });
+    }
 
+    /**
+     * 持久化完成后回到玩家 Entity 上下文执行后续操作。
+     * 这保证调用方不会在备份真正落盘前清空玩家背包。
+     */
+    public static void saveThen(Player player, Runnable success, Consumer<Throwable> failure) {
+        if (player == null || plugin == null || !active) return;
+        UUID uuid = player.getUniqueId();
+        long generation = lifecycleGeneration.get();
+        File file = fileFor(player);
+        String playerName = player.getName();
+        BackupRecord record = backups.get(uuid);
+        if (record == null) {
+            record = new BackupRecord(serialize(player), backupVersion.incrementAndGet());
+            BackupRecord raced = backups.putIfAbsent(uuid, record);
+            if (raced != null) record = raced;
+        }
+
+        schedulePersistence(uuid, file.toPath(), playerName, record);
+        BackupRecord expected = record;
+        record.persisted.whenComplete((ignored, error) -> {
+            if (generation != lifecycleGeneration.get() || !active) return;
+            FoliaScheduler.runEntity(player, () -> {
+                if (generation != lifecycleGeneration.get() || !active
+                        || !player.isOnline() || backups.get(uuid) != expected) return;
+                if (error == null) {
+                    success.run();
+                } else {
+                    failure.accept(unwrap(error));
+                }
+            });
+        });
+    }
+
+    private static String serialize(Player player) {
         PlayerInventory inv = player.getInventory();
         YamlConfiguration config = new YamlConfiguration();
-
-        // 主背包（含副手在部分实现里，按实际 slot 保存）
         ItemStack[] contents = inv.getContents();
         config.set("contents-size", contents.length);
         for (int i = 0; i < contents.length; i++) {
-            if (contents[i] != null && !contents[i].getType().isAir()) {
-                config.set("contents." + i, contents[i]);
-            }
+            if (contents[i] != null && !contents[i].getType().isAir()) config.set("contents." + i, contents[i]);
         }
-
-        // 盔甲槽（boots/leggings/chestplate/helmet，索引 0-3）
         ItemStack[] armor = inv.getArmorContents();
         for (int i = 0; i < armor.length; i++) {
-            if (armor[i] != null && !armor[i].getType().isAir()) {
-                config.set("armor." + i, armor[i]);
-            }
+            if (armor[i] != null && !armor[i].getType().isAir()) config.set("armor." + i, armor[i]);
         }
-
-        // 副手（offhand）
         ItemStack[] extra = inv.getExtraContents();
         for (int i = 0; i < extra.length; i++) {
-            if (extra[i] != null && !extra[i].getType().isAir()) {
-                config.set("extra." + i, extra[i]);
-            }
+            if (extra[i] != null && !extra[i].getType().isAir()) config.set("extra." + i, extra[i]);
         }
-
-        // 状态
         config.set("allowFlight", player.getAllowFlight());
         config.set("flying", player.isFlying());
         config.set("gameMode", player.getGameMode().name());
@@ -86,26 +141,53 @@ public final class PlayerStateCache {
         Attribute scaleAttribute = Registry.ATTRIBUTE.get(NamespacedKey.minecraft("scale"));
         AttributeInstance scale = scaleAttribute == null ? null : player.getAttribute(scaleAttribute);
         if (scale != null) config.set("scale", scale.getBaseValue());
+        return config.saveToString();
+    }
 
-        try {
-            config.save(file);
-        } catch (IOException e) {
-            plugin.getLogger().log(Level.SEVERE,
-                    "无法保存 " + player.getName() + " 的背包备份", e);
+    private static void schedulePersistence(UUID uuid, Path file, String playerName, BackupRecord record) {
+        synchronized (record) {
+            if (record.persisted != null && !record.persisted.isCompletedExceptionally()) return;
+            record.persisted = enqueueIo(uuid, () -> {
+                Path temp = file.resolveSibling(file.getFileName() + ".tmp");
+                Files.writeString(temp, record.serialized, StandardCharsets.UTF_8,
+                        StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
+                if (backups.get(uuid) != record) {
+                    Files.deleteIfExists(temp);
+                    return;
+                }
+                try {
+                    Files.move(temp, file, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
+                } catch (AtomicMoveNotSupportedException ignored) {
+                    Files.move(temp, file, StandardCopyOption.REPLACE_EXISTING);
+                }
+            });
+            record.persisted.whenComplete((ignored, error) -> {
+                if (error != null) {
+                    plugin.getLogger().log(Level.SEVERE, "无法保存 " + playerName + " 的背包备份", unwrap(error));
+                }
+            });
         }
+    }
+
+    /** Stops new operations while already queued backup writes finish. */
+    public static void shutdown() {
+        active = false;
+        lifecycleGeneration.incrementAndGet();
     }
 
     /** 从文件恢复玩家状态，恢复成功后删除临时文件。 */
     public static void restore(Player player) {
         if (player == null || plugin == null) return;
         File file = fileFor(player);
-        if (!file.exists()) return;
-
-        YamlConfiguration config = YamlConfiguration.loadConfiguration(file);
+        UUID uuid = player.getUniqueId();
+        BackupRecord record = backups.get(uuid);
+        if (record == null) return;
+        String serialized = record.serialized;
+        YamlConfiguration config = YamlConfiguration.loadConfiguration(new StringReader(serialized));
         PlayerInventory inv = player.getInventory();
 
         // 恢复主背包（保留原始长度，确保槽位顺序一致）
-        int size = config.getInt("contents-size", 36);
+        int size = Math.max(0, Math.min(config.getInt("contents-size", inv.getContents().length), inv.getContents().length));
         ItemStack[] contents = new ItemStack[size];
         for (int i = 0; i < size; i++) {
             contents[i] = config.getItemStack("contents." + i, null);
@@ -151,10 +233,12 @@ public final class PlayerStateCache {
 
         player.updateInventory();
 
-        // 删除临时备份文件
-        if (!file.delete()) {
-            plugin.getLogger().warning("无法删除备份文件：" + file.getPath());
-        }
+        if (!backups.remove(uuid, record)) return;
+        enqueueIo(uuid, () -> {
+            if (!backups.containsKey(uuid)) Files.deleteIfExists(file.toPath());
+        }).whenComplete((ignored, error) -> {
+            if (error != null) plugin.getLogger().log(Level.WARNING, "无法删除备份文件：" + file.getPath(), unwrap(error));
+        });
     }
 
     /** 清空玩家背包（主背包 + 盔甲 + 副手）。 */
@@ -169,6 +253,56 @@ public final class PlayerStateCache {
 
     /** 判断该玩家是否存在备份文件。 */
     public static boolean has(Player player) {
-        return player != null && plugin != null && fileFor(player).exists();
+        return player != null && has(player.getUniqueId());
+    }
+
+    public static boolean has(UUID playerId) {
+        return playerId != null && plugin != null && backups.containsKey(playerId);
+    }
+
+    private static CompletableFuture<Void> enqueueIo(UUID uuid, IoOperation operation) {
+        CompletableFuture<Void> next = new CompletableFuture<>();
+        ioTails.compute(uuid, (ignored, tail) -> {
+            CompletableFuture<Void> previous = tail == null
+                    ? CompletableFuture.completedFuture(null)
+                    : tail.handle((value, error) -> null);
+            previous.whenComplete((value, error) -> FoliaScheduler.runAsync(() -> {
+                try {
+                    operation.run();
+                    next.complete(null);
+                } catch (Throwable throwable) {
+                    next.completeExceptionally(throwable);
+                }
+            }));
+            return next;
+        });
+        next.whenComplete((value, error) -> ioTails.remove(uuid, next));
+        return next;
+    }
+
+    private static Throwable unwrap(Throwable error) {
+        return error.getCause() == null ? error : error.getCause();
+    }
+
+    @FunctionalInterface
+    private interface IoOperation {
+        void run() throws Exception;
+    }
+
+    private static final class BackupRecord {
+        final String serialized;
+        final long version;
+        volatile CompletableFuture<Void> persisted;
+
+        BackupRecord(String serialized, long version) {
+            this.serialized = serialized;
+            this.version = version;
+        }
+
+        static BackupRecord loaded(String serialized, long version) {
+            BackupRecord record = new BackupRecord(serialized, version);
+            record.persisted = CompletableFuture.completedFuture(null);
+            return record;
+        }
     }
 }

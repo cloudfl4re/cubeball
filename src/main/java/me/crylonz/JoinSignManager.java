@@ -2,7 +2,10 @@ package me.crylonz;
 
 import com.github.squi2rel.cb.I18n;
 import com.github.squi2rel.cb.util.FoliaScheduler;
-import io.papermc.paper.threadedregions.scheduler.ScheduledTask;
+import com.github.squi2rel.cb.util.TaskHandle;
+import net.kyori.adventure.text.Component;
+import net.kyori.adventure.text.format.TextDecoration;
+import net.kyori.adventure.text.serializer.legacy.LegacyComponentSerializer;
 import org.bukkit.Bukkit;
 import org.bukkit.ChatColor;
 import org.bukkit.GameMode;
@@ -27,8 +30,10 @@ import java.util.EnumMap;
 import java.util.List;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.CopyOnWriteArrayList;
 
 public final class JoinSignManager {
     private static final String SIGN_HEADER = "[CubeBall]";
@@ -113,12 +118,15 @@ public final class JoinSignManager {
         if (choice == Choice.RED) {
             match.applyTeamKit(player, Team.RED);
             sendPlayerMessage(player, I18n.get("lobby_selected_red"));
+            VisualEffects.lobbyChoice(player, Team.RED);
         } else if (choice == Choice.BLUE) {
             match.applyTeamKit(player, Team.BLUE);
             sendPlayerMessage(player, I18n.get("lobby_selected_blue"));
+            VisualEffects.lobbyChoice(player, Team.BLUE);
         } else {
             match.applyTeamKit(player, Team.SPECTATOR);
             sendPlayerMessage(player, I18n.get("lobby_selected_spectator"));
+            VisualEffects.lobbyChoice(player, Team.SPECTATOR);
         }
 
         evaluateCountdown(lobby);
@@ -187,11 +195,6 @@ public final class JoinSignManager {
             synchronized (lobby) {
                 cancelCountdown(lobby, false);
                 for (UUID uuid : new ArrayList<>(lobby.players.keySet())) {
-                    CubeBall.reservePlayerExit(uuid);
-                    Player player = Bukkit.getPlayer(uuid);
-                    if (player != null) {
-                        FoliaScheduler.runEntity(player, () -> CubeBall.restorePlayerAndExit(player));
-                    }
                     playerLobby.remove(uuid, lobby.matchName);
                 }
                 lobby.players.clear();
@@ -199,6 +202,22 @@ public final class JoinSignManager {
             }
         }
         playerLobby.clear();
+    }
+
+    public static void tickWaitingPlayers() {
+        String residenceName = CubeBall.getWaitingLobbyResidence();
+        if (residenceName.isEmpty()) return;
+        for (Map.Entry<UUID, String> entry : playerLobby.entrySet()) {
+            Player player = Bukkit.getPlayer(entry.getKey());
+            if (player == null) continue;
+            FoliaScheduler.runEntity(player, () -> {
+                if (!player.isOnline() || !Objects.equals(playerLobby.get(player.getUniqueId()), entry.getValue())) return;
+                if (ResidenceHook.getState(player.getLocation(), residenceName) != ResidenceHook.State.OUTSIDE) return;
+                if (leaveWaitingPlayerIfPresent(player)) {
+                    player.sendMessage(I18n.get("lobby_left_residence"));
+                }
+            });
+        }
     }
 
     public static void join(Player player, String matchName) {
@@ -223,13 +242,21 @@ public final class JoinSignManager {
         if (match.isInProgress()) {
             if (!isPlayingAnotherMatch(player)) {
                 if (isWaiting(player)) removeWaitingPlayer(player, true);
-                PlayerStateCache.save(player);
-                Location lobbySpawn = CubeBall.getLobbySpawn();
-                if (lobbySpawn != null) player.teleportAsync(lobbySpawn);
-                match.addPlayerToTeam(player, Team.SPECTATOR);
-                PlayerStateCache.clear(player);
-                match.applyTeamKit(player, Team.SPECTATOR);
-                giveActiveSpectatorItem(player);
+                PlayerStateCache.saveThen(player, () -> teleportToLobby(player, () -> {
+                    if (!match.isInProgress() || isPlayingAnotherMatch(player)) {
+                        PlayerStateCache.restore(player);
+                        sendPlayerMessage(player, I18n.get("lobby_match_unavailable"));
+                        return;
+                    }
+                    match.addPlayerToTeam(player, Team.SPECTATOR);
+                    PlayerStateCache.clear(player);
+                    match.applyTeamKit(player, Team.SPECTATOR);
+                    giveActiveSpectatorItem(player);
+                    VisualEffects.lobbyJoin(player);
+                }, () -> {
+                    PlayerStateCache.restore(player);
+                    sendPlayerMessage(player, I18n.get("lobby_teleport_failed"));
+                }), error -> sendPlayerMessage(player, I18n.get("player_state_save_failed")));
                 return;
             }
             sendPlayerMessage(player, I18n.format("lobby_match_in_progress", "match", match.getName()));
@@ -253,17 +280,41 @@ public final class JoinSignManager {
             playerLobby.put(player.getUniqueId(), lobby.matchName);
         }
 
-        PlayerStateCache.save(player);
-        Location lobbySpawn = CubeBall.getLobbySpawn();
-        if (lobbySpawn != null) player.teleportAsync(lobbySpawn);
-        giveLobbyItems(player, getChoice(player));
-        sendPlayerMessage(player, I18n.format("lobby_joined", "match", match.getName()));
-        sendPlayerMessage(player, I18n.get("lobby_waiting_state_locked"));
+        PlayerStateCache.saveThen(player, () -> teleportToLobby(player, () -> {
+            if (!Objects.equals(playerLobby.get(player.getUniqueId()), lobby.matchName)) return;
+            giveLobbyItems(player, getChoice(player));
+            VisualEffects.lobbyJoin(player);
+            sendPlayerMessage(player, I18n.format("lobby_joined", "match", match.getName()));
+            sendPlayerMessage(player, I18n.get("lobby_waiting_state_locked"));
+            evaluateCountdown(lobby);
+            if (countdownAlreadyRunning && lobby.countdownTask != null) {
+                sendPlayerMessage(player, I18n.format("lobby_countdown_running", "seconds", remainingSeconds(lobby)));
+            }
+        }, () -> rollbackWaitingJoin(player, I18n.get("lobby_teleport_failed"))),
+                error -> rollbackWaitingJoin(player, I18n.get("player_state_save_failed")));
+    }
 
-        evaluateCountdown(lobby);
-        if (countdownAlreadyRunning && lobby.countdownTask != null) {
-            sendPlayerMessage(player, I18n.format("lobby_countdown_running", "seconds", remainingSeconds(lobby)));
+    private static void teleportToLobby(Player player, Runnable success, Runnable failure) {
+        Location target = CubeBall.getLobbySpawn();
+        if (target == null) {
+            success.run();
+            return;
         }
+        try {
+            player.teleportAsync(target).whenComplete((teleported, error) -> FoliaScheduler.runEntity(player, () -> {
+                if (!player.isOnline()) return;
+                if (error == null && Boolean.TRUE.equals(teleported)) success.run();
+                else failure.run();
+            }));
+        } catch (RuntimeException error) {
+            failure.run();
+        }
+    }
+
+    private static void rollbackWaitingJoin(Player player, String message) {
+        removeWaitingPlayerInternal(player, false);
+        PlayerStateCache.restore(player);
+        sendPlayerMessage(player, message);
     }
 
     private static boolean isPlayingAnotherMatch(Player player) {
@@ -289,10 +340,10 @@ public final class JoinSignManager {
         PlayerStateCache.clear(player);
         lockWaitingState(player);
         PlayerInventory inventory = player.getInventory();
-        inventory.setItem(0, selector(Material.RED_WOOL, Choice.RED, I18n.get("lobby_selector_red")));
-        inventory.setItem(1, selector(Material.BLUE_WOOL, Choice.BLUE, I18n.get("lobby_selector_blue")));
-        inventory.setItem(2, selector(Material.WHITE_WOOL, Choice.SPECTATOR, I18n.get("lobby_selector_spectator")));
-        inventory.setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave")));
+        inventory.setItem(0, selector(Material.RED_WOOL, Choice.RED, I18n.get("lobby_selector_red"), choice == Choice.RED));
+        inventory.setItem(1, selector(Material.BLUE_WOOL, Choice.BLUE, I18n.get("lobby_selector_blue"), choice == Choice.BLUE));
+        inventory.setItem(2, selector(Material.WHITE_WOOL, Choice.SPECTATOR, I18n.get("lobby_selector_spectator"), choice == Choice.SPECTATOR));
+        inventory.setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave"), false));
 
         Match match = currentMatch(player);
         if (match != null) {
@@ -320,15 +371,24 @@ public final class JoinSignManager {
     }
 
     static void giveActiveSpectatorItem(Player player) {
-        player.getInventory().setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave")));
+        player.getInventory().setItem(8, selector(Material.BARRIER, Choice.LEAVE, I18n.get("lobby_selector_leave"), false));
         player.updateInventory();
     }
 
-    private static ItemStack selector(Material material, Choice choice, String name) {
+    private static ItemStack selector(Material material, Choice choice, String name, boolean selected) {
         ItemStack item = new ItemStack(material);
         ItemMeta meta = item.getItemMeta();
         if (meta != null) {
-            meta.setDisplayName(name);
+            String color = choice == Choice.RED ? "§c" : choice == Choice.BLUE ? "§9"
+                    : choice == Choice.SPECTATOR ? "§f" : "§c";
+            Component title = LegacyComponentSerializer.legacySection().deserialize(color + name)
+                    .decoration(TextDecoration.ITALIC, false);
+            Component lore = LegacyComponentSerializer.legacySection().deserialize(
+                            selected ? "§a当前已选择" : choice == Choice.LEAVE ? "§7右键退出" : "§e右键选择")
+                    .decoration(TextDecoration.ITALIC, false);
+            meta.displayName(title);
+            meta.lore(List.of(lore));
+            meta.setEnchantmentGlintOverride(selected);
             meta.getPersistentDataContainer().set(selectorKey(), PersistentDataType.STRING, choice.name());
             item.setItemMeta(meta);
         }
@@ -406,7 +466,7 @@ public final class JoinSignManager {
 
         for (LobbyEntry entry : lobby.players.values()) {
             Player player = Bukkit.getPlayer(entry.playerId);
-            if (player == null || !player.isOnline()) continue;
+            if (player == null) continue;
             if (entry.choice == Choice.SPECTATOR) {
                 spectators.add(player);
             } else {
@@ -459,8 +519,7 @@ public final class JoinSignManager {
         int count = 0;
         for (LobbyEntry entry : lobby.players.values()) {
             if (entry.choice == choice) {
-                Player player = Bukkit.getPlayer(entry.playerId);
-                if (player != null && player.isOnline()) count++;
+                count++;
             }
         }
         return count;
@@ -486,10 +545,7 @@ public final class JoinSignManager {
     private static int countEligiblePlayers(Lobby lobby) {
         int count = 0;
         for (LobbyEntry entry : lobby.players.values()) {
-            Player player = Bukkit.getPlayer(entry.playerId);
-            if (player != null && player.isOnline() && entry.choice != Choice.SPECTATOR) {
-                count++;
-            }
+            if (entry.choice != Choice.SPECTATOR) count++;
         }
         return count;
     }
@@ -500,7 +556,7 @@ public final class JoinSignManager {
             for (UUID uuid : new ArrayList<>(lobby.players.keySet())) {
                 CubeBall.reservePlayerExit(uuid);
                 Player player = Bukkit.getPlayer(uuid);
-                if (player != null && player.isOnline()) {
+                if (player != null) {
                     FoliaScheduler.runEntity(player, () -> CubeBall.restorePlayerAndExit(player));
                 }
             }
@@ -524,7 +580,7 @@ public final class JoinSignManager {
             lobby.countdownTask = null;
             lobby.countdownEndsAtMillis = 0L;
         }
-        for (ScheduledTask task : lobby.countdownTitleTasks) {
+        for (TaskHandle task : lobby.countdownTitleTasks) {
             task.cancel();
         }
         lobby.countdownTitleTasks.clear();
@@ -541,24 +597,28 @@ public final class JoinSignManager {
     private static void sendLobbyMessage(Lobby lobby, String message) {
         for (UUID uuid : lobby.players.keySet()) {
             Player player = Bukkit.getPlayer(uuid);
-            if (player != null && player.isOnline()) {
-                sendPlayerMessage(player, message);
-            }
+            if (player != null) sendPlayerMessage(player, message);
         }
     }
 
     private static void sendLobbyTitle(Lobby lobby, int seconds) {
         for (UUID uuid : lobby.players.keySet()) {
             Player player = Bukkit.getPlayer(uuid);
-            if (player != null && player.isOnline()) {
-                FoliaScheduler.runEntity(player, () -> player.sendTitle("§e" + seconds, "", 0, 20, 0));
+            if (player != null) {
+                FoliaScheduler.runEntity(player, () -> {
+                    if (!player.isOnline()) return;
+                    player.sendTitle("§e" + seconds, "", 0, 20, 0);
+                    VisualEffects.countdown(player, seconds);
+                });
             }
         }
     }
 
     private static void sendPlayerMessage(Player player, String message) {
-        if (player == null || !player.isOnline()) return;
-        FoliaScheduler.runEntity(player, () -> player.sendMessage(message));
+        if (player == null) return;
+        FoliaScheduler.runEntity(player, () -> {
+            if (player.isOnline()) player.sendMessage(message);
+        });
     }
 
     private static boolean isMainHand(PlayerInteractEvent event) {
@@ -585,8 +645,8 @@ public final class JoinSignManager {
     private static final class Lobby {
         private final String matchName;
         private final Map<UUID, LobbyEntry> players = new ConcurrentHashMap<>();
-        private final List<ScheduledTask> countdownTitleTasks = new ArrayList<>();
-        private ScheduledTask countdownTask;
+        private final List<TaskHandle> countdownTitleTasks = new CopyOnWriteArrayList<>();
+        private TaskHandle countdownTask;
         private long countdownEndsAtMillis;
 
         private Lobby(String matchName) {
