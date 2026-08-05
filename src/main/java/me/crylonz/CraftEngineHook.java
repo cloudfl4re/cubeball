@@ -23,6 +23,7 @@ public final class CraftEngineHook {
     private static final String BLOCKS_CLASS = "net.momirealms.craftengine.bukkit.api.CraftEngineBlocks";
     private static final String ITEMS_CLASS = "net.momirealms.craftengine.bukkit.api.CraftEngineItems";
     private static final String ITEM_MANAGER_CLASS = "net.momirealms.craftengine.bukkit.item.BukkitItemManager";
+    private static final int MAX_WARNINGS = 256;
     private static final Set<String> WARNED = ConcurrentHashMap.newKeySet();
 
     private CraftEngineHook() {
@@ -90,6 +91,10 @@ public final class CraftEngineHook {
         ItemStack item = buildCustomItem(key);
         if (item != null) item.setAmount(1);
         return item;
+    }
+
+    public static void shutdown() {
+        WARNED.clear();
     }
 
     private static BlockData resolveBlockData(Object key) {
@@ -321,7 +326,7 @@ public final class CraftEngineHook {
     private static void debugMethodsOnce(Object object) {
         if (!CubeBall.debugMode || object == null) return;
         String key = "methods:" + object.getClass().getName();
-        if (!WARNED.add(key)) return;
+        if (!rememberWarning(key)) return;
         for (Method method : object.getClass().getMethods()) {
             if (Modifier.isStatic(method.getModifiers())) continue;
             String lower = method.getName().toLowerCase();
@@ -334,8 +339,15 @@ public final class CraftEngineHook {
     }
 
     private static void warnOnce(String key, String message) {
-        if (CubeBall.plugin != null && WARNED.add(key)) {
+        if (CubeBall.plugin != null && rememberWarning(key)) {
             CubeBall.plugin.getLogger().warning(message);
+        }
+    }
+
+    private static boolean rememberWarning(String key) {
+        synchronized (WARNED) {
+            if (WARNED.contains(key) || WARNED.size() >= MAX_WARNINGS) return false;
+            return WARNED.add(key);
         }
     }
 

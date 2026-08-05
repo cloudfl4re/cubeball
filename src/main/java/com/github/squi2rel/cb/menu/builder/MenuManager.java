@@ -63,6 +63,11 @@ public class MenuManager implements Listener {
         menus.clear();
     }
 
+    public static void shutdown() {
+        handlers.clear();
+        menus.clear();
+    }
+
     public static void init(Plugin plugin) {
         plugin.getServer().getPluginManager().registerEvents(new MenuManager(), plugin);
     }

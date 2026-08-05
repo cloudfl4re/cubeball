@@ -52,6 +52,15 @@ public final class ResidenceHook {
         init();
     }
 
+    public static synchronized void shutdown() {
+        initialized = false;
+        available = false;
+        residenceManager = null;
+        getByLocation = null;
+        getResidenceName = null;
+        failure = null;
+    }
+
     public static State getState(Location location, String configuredName) {
         if (configuredName == null || configuredName.isBlank() || location == null) return State.UNAVAILABLE;
         if (!initialized) init();

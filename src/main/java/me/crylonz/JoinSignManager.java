@@ -301,7 +301,7 @@ public final class JoinSignManager {
             return;
         }
         try {
-            player.teleportAsync(target).whenComplete((teleported, error) -> FoliaScheduler.runEntity(player, () -> {
+            FoliaScheduler.teleport(player, target).whenComplete((teleported, error) -> FoliaScheduler.runEntity(player, () -> {
                 if (!player.isOnline()) return;
                 if (error == null && Boolean.TRUE.equals(teleported)) success.run();
                 else failure.run();

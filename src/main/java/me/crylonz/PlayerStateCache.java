@@ -22,6 +22,7 @@ import java.nio.file.StandardCopyOption;
 import java.nio.file.StandardOpenOption;
 import java.util.Map;
 import java.util.UUID;
+import java.util.concurrent.CancellationException;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicLong;
@@ -38,25 +39,30 @@ public final class PlayerStateCache {
     private PlayerStateCache() {
     }
 
-    private static Plugin plugin;
+    private static final Object LIFECYCLE_LOCK = new Object();
+    private static volatile Plugin plugin;
     private static volatile boolean active;
-    private static File backupDir;
+    private static volatile File backupDir;
     private static final Map<UUID, BackupRecord> backups = new ConcurrentHashMap<>();
     private static final Map<UUID, CompletableFuture<Void>> ioTails = new ConcurrentHashMap<>();
     private static final AtomicLong backupVersion = new AtomicLong(System.currentTimeMillis());
     private static final AtomicLong lifecycleGeneration = new AtomicLong();
 
     public static void init(Plugin p) {
-        plugin = p;
-        active = true;
-        lifecycleGeneration.incrementAndGet();
-        backupDir = new File(p.getDataFolder(), "inv_backup");
-        if (!backupDir.exists()) {
-            backupDir.mkdirs();
+        synchronized (LIFECYCLE_LOCK) {
+            active = false;
+            lifecycleGeneration.incrementAndGet();
+            backups.clear();
+            ioTails.clear();
+            plugin = p;
+            backupDir = new File(p.getDataFolder(), "inv_backup");
+            active = true;
         }
-        backups.clear();
-        ioTails.clear();
-        File[] files = backupDir.listFiles((dir, name) -> name.endsWith(".yml"));
+        File directory = backupDir;
+        if (!directory.exists()) {
+            directory.mkdirs();
+        }
+        File[] files = directory.listFiles((dir, name) -> name.endsWith(".yml"));
         if (files != null) {
             for (File file : files) {
                 try {
@@ -71,7 +77,8 @@ public final class PlayerStateCache {
     }
 
     private static File fileFor(Player player) {
-        return new File(backupDir, player.getUniqueId() + ".yml");
+        File directory = backupDir;
+        return directory == null ? null : new File(directory, player.getUniqueId() + ".yml");
     }
 
     /** 将玩家当前状态写入文件（已有备份则跳过，防止多轮覆盖原始背包）。 */
@@ -86,10 +93,12 @@ public final class PlayerStateCache {
      * 这保证调用方不会在备份真正落盘前清空玩家背包。
      */
     public static void saveThen(Player player, Runnable success, Consumer<Throwable> failure) {
-        if (player == null || plugin == null || !active) return;
+        Plugin owner = plugin;
+        if (player == null || owner == null || !active) return;
         UUID uuid = player.getUniqueId();
         long generation = lifecycleGeneration.get();
         File file = fileFor(player);
+        if (file == null) return;
         String playerName = player.getName();
         BackupRecord record = backups.get(uuid);
         if (record == null) {
@@ -98,12 +107,12 @@ public final class PlayerStateCache {
             if (raced != null) record = raced;
         }
 
-        schedulePersistence(uuid, file.toPath(), playerName, record);
+        schedulePersistence(uuid, file.toPath(), playerName, record, generation, owner);
         BackupRecord expected = record;
         record.persisted.whenComplete((ignored, error) -> {
-            if (generation != lifecycleGeneration.get() || !active) return;
+            if (!isActive(generation)) return;
             FoliaScheduler.runEntity(player, () -> {
-                if (generation != lifecycleGeneration.get() || !active
+                if (!isActive(generation)
                         || !player.isOnline() || backups.get(uuid) != expected) return;
                 if (error == null) {
                     success.run();
@@ -144,14 +153,15 @@ public final class PlayerStateCache {
         return config.saveToString();
     }
 
-    private static void schedulePersistence(UUID uuid, Path file, String playerName, BackupRecord record) {
+    private static void schedulePersistence(UUID uuid, Path file, String playerName, BackupRecord record,
+                                            long generation, Plugin owner) {
         synchronized (record) {
             if (record.persisted != null && !record.persisted.isCompletedExceptionally()) return;
-            record.persisted = enqueueIo(uuid, () -> {
+            record.persisted = enqueueIo(uuid, generation, () -> {
                 Path temp = file.resolveSibling(file.getFileName() + ".tmp");
                 Files.writeString(temp, record.serialized, StandardCharsets.UTF_8,
                         StandardOpenOption.CREATE, StandardOpenOption.TRUNCATE_EXISTING, StandardOpenOption.WRITE);
-                if (backups.get(uuid) != record) {
+                if (!isActive(generation) || backups.get(uuid) != record) {
                     Files.deleteIfExists(temp);
                     return;
                 }
@@ -162,23 +172,34 @@ public final class PlayerStateCache {
                 }
             });
             record.persisted.whenComplete((ignored, error) -> {
-                if (error != null) {
-                    plugin.getLogger().log(Level.SEVERE, "无法保存 " + playerName + " 的背包备份", unwrap(error));
+                if (error != null && !(unwrap(error) instanceof CancellationException) && isActive(generation)) {
+                    owner.getLogger().log(Level.SEVERE, "无法保存 " + playerName + " 的背包备份", unwrap(error));
                 }
             });
         }
     }
 
-    /** Stops new operations while already queued backup writes finish. */
     public static void shutdown() {
-        active = false;
-        lifecycleGeneration.incrementAndGet();
+        synchronized (LIFECYCLE_LOCK) {
+            active = false;
+            lifecycleGeneration.incrementAndGet();
+            for (CompletableFuture<Void> future : ioTails.values()) {
+                future.cancel(false);
+            }
+            ioTails.clear();
+            backups.clear();
+            backupDir = null;
+            plugin = null;
+        }
     }
 
     /** 从文件恢复玩家状态，恢复成功后删除临时文件。 */
     public static void restore(Player player) {
-        if (player == null || plugin == null) return;
+        Plugin owner = plugin;
+        if (player == null || owner == null || !active) return;
+        long generation = lifecycleGeneration.get();
         File file = fileFor(player);
+        if (file == null) return;
         UUID uuid = player.getUniqueId();
         BackupRecord record = backups.get(uuid);
         if (record == null) return;
@@ -234,10 +255,12 @@ public final class PlayerStateCache {
         player.updateInventory();
 
         if (!backups.remove(uuid, record)) return;
-        enqueueIo(uuid, () -> {
-            if (!backups.containsKey(uuid)) Files.deleteIfExists(file.toPath());
+        enqueueIo(uuid, generation, () -> {
+            if (isActive(generation) && !backups.containsKey(uuid)) Files.deleteIfExists(file.toPath());
         }).whenComplete((ignored, error) -> {
-            if (error != null) plugin.getLogger().log(Level.WARNING, "无法删除备份文件：" + file.getPath(), unwrap(error));
+            if (error != null && !(unwrap(error) instanceof CancellationException) && isActive(generation)) {
+                owner.getLogger().log(Level.WARNING, "无法删除备份文件：" + file.getPath(), unwrap(error));
+            }
         });
     }
 
@@ -257,27 +280,47 @@ public final class PlayerStateCache {
     }
 
     public static boolean has(UUID playerId) {
-        return playerId != null && plugin != null && backups.containsKey(playerId);
+        return playerId != null && active && plugin != null && backups.containsKey(playerId);
     }
 
-    private static CompletableFuture<Void> enqueueIo(UUID uuid, IoOperation operation) {
+    private static CompletableFuture<Void> enqueueIo(UUID uuid, long generation, IoOperation operation) {
         CompletableFuture<Void> next = new CompletableFuture<>();
-        ioTails.compute(uuid, (ignored, tail) -> {
-            CompletableFuture<Void> previous = tail == null
-                    ? CompletableFuture.completedFuture(null)
-                    : tail.handle((value, error) -> null);
-            previous.whenComplete((value, error) -> FoliaScheduler.runAsync(() -> {
-                try {
-                    operation.run();
-                    next.complete(null);
-                } catch (Throwable throwable) {
-                    next.completeExceptionally(throwable);
-                }
-            }));
-            return next;
-        });
+        synchronized (LIFECYCLE_LOCK) {
+            if (!isActive(generation)) {
+                next.cancel(false);
+                return next;
+            }
+            ioTails.compute(uuid, (ignored, tail) -> {
+                CompletableFuture<Void> previous = tail == null
+                        ? CompletableFuture.completedFuture(null)
+                        : tail.handle((value, error) -> null);
+                previous.whenComplete((value, error) -> {
+                    if (!isActive(generation)) {
+                        next.cancel(false);
+                        return;
+                    }
+                    FoliaScheduler.runAsync(() -> {
+                        if (!isActive(generation)) {
+                            next.cancel(false);
+                            return;
+                        }
+                        try {
+                            operation.run();
+                            next.complete(null);
+                        } catch (Throwable throwable) {
+                            next.completeExceptionally(throwable);
+                        }
+                    });
+                });
+                return next;
+            });
+        }
         next.whenComplete((value, error) -> ioTails.remove(uuid, next));
         return next;
+    }
+
+    private static boolean isActive(long generation) {
+        return active && plugin != null && generation == lifecycleGeneration.get();
     }
 
     private static Throwable unwrap(Throwable error) {

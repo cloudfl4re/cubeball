@@ -68,9 +68,6 @@ public final class ResidenceBossBar {
     }
 
     public static void shutdown() {
-        for (BossBar bar : bars.values()) {
-            bar.removeAll();
-        }
         bars.clear();
     }
 

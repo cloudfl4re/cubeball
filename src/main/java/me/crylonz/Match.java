@@ -250,7 +250,7 @@ public class Match {
             Location target = getFacingLocation(spawns.get(ids[i++]), data.ballSpawn);
             runForPlayer(player, p -> {
                 try {
-                    p.teleportAsync(target).whenComplete((success, error) -> {
+                    FoliaScheduler.teleport(p, target).whenComplete((success, error) -> {
                         if (error == null && Boolean.TRUE.equals(success)) return;
                         FoliaScheduler.runEntity(p, () -> handleParticipantPreparationFailure(p, "match_teleport_failed"));
                     });
@@ -1059,6 +1059,18 @@ public class Match {
 
     public MatchData getData() {
         return data;
+    }
+
+    public synchronized void shutdown() {
+        canceled = true;
+        roundGeneration.incrementAndGet();
+        scanGeneration.incrementAndGet();
+        cancelRoundTasks(false);
+        clearPauseState();
+        spectatorStateTokens.clear();
+        originalScales.clear();
+        goals.clear();
+        clearPlayers();
     }
 
     public synchronized void removeBall() {

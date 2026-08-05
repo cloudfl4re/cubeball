@@ -53,6 +53,7 @@ public class CubeBall extends JavaPlugin {
     public static Map<String, Ball> balls = new ConcurrentHashMap<>();
     public static Map<String, Match> matches = new ConcurrentHashMap<>();
     public static Map<UUID, Long> cooldown = new ConcurrentHashMap<>();
+    private static final int MAX_APPEARANCE_WARNINGS = 256;
     private static final Set<String> appearanceWarnings = ConcurrentHashMap.newKeySet();
     private static final Map<UUID, Integer> exitGenerations = new ConcurrentHashMap<>();
     private static NamespacedKey spectatorInvisibleKey;
@@ -72,7 +73,9 @@ public class CubeBall extends JavaPlugin {
     private static final AtomicBoolean snapshotQueued = new AtomicBoolean();
     private static final AtomicBoolean saveQueued = new AtomicBoolean();
     private static final AtomicLong saveVersion = new AtomicLong();
+    private static final AtomicLong lifecycleGeneration = new AtomicLong();
     private static final Object SAVE_LOCK = new Object();
+    private static volatile boolean active;
     private static volatile ConfigSnapshot pendingConfig;
     private static volatile Location lobbySpawn;
     private static volatile Location exitSpawn;
@@ -235,9 +238,13 @@ public class CubeBall extends JavaPlugin {
     }
 
     private static void warnAppearanceOnce(String key, String message) {
-        if (plugin != null && appearanceWarnings.add(key)) {
-            plugin.getLogger().warning(message);
+        Plugin owner = plugin;
+        if (owner == null) return;
+        synchronized (appearanceWarnings) {
+            if (appearanceWarnings.contains(key) || appearanceWarnings.size() >= MAX_APPEARANCE_WARNINGS) return;
+            appearanceWarnings.add(key);
         }
+        owner.getLogger().warning(message);
     }
 
     public static void destroyBall(String id) {
@@ -258,6 +265,12 @@ public class CubeBall extends JavaPlugin {
 
     public void onEnable() {
         plugin = this;
+        snapshotQueued.set(false);
+        saveQueued.set(false);
+        configReloading.set(false);
+        pendingConfig = null;
+        lifecycleGeneration.incrementAndGet();
+        active = true;
         spectatorInvisibleKey = new NamespacedKey(this, "spectator_invisible");
         FoliaScheduler.init(this);
         PlayerStateCache.init(this);
@@ -311,17 +324,20 @@ public class CubeBall extends JavaPlugin {
     }
 
     public void onDisable() {
+        active = false;
+        lifecycleGeneration.incrementAndGet();
         ResidenceBossBar.shutdown();
-        MenuManager.closeAll();
+        MenuManager.shutdown();
         JoinSignManager.shutdown();
         EmotecraftHook.shutdown();
-        save();
+        CraftEngineHook.shutdown();
+        ResidenceHook.shutdown();
         PlayerStateCache.shutdown();
+        FoliaScheduler.shutdown(this);
+        save();
 
-        // onDisable has no Region ownership. The non-persistent entities are
-        // left to world shutdown while only the plugin-owned task handles are cancelled.
+        matches.values().forEach(Match::shutdown);
         balls.values().forEach(Ball::cancelPhysicsTask);
-        FoliaScheduler.cancelPluginTasks(this);
         GoalSelectionManager.clearAll();
         balls.clear();
         matches.clear();
@@ -329,70 +345,95 @@ public class CubeBall extends JavaPlugin {
         appearanceWarnings.clear();
         exitGenerations.clear();
         configReloading.set(false);
+        snapshotQueued.set(false);
+        saveQueued.set(false);
+        pendingConfig = null;
+        lobbySpawn = null;
+        exitSpawn = null;
+        spectatorInvisibleKey = null;
+        plugin = null;
     }
 
     public static void save() {
+        Plugin owner = plugin;
+        if (owner == null) return;
         saveVersion.incrementAndGet();
         pendingConfig = null;
         synchronized (SAVE_LOCK) {
             try {
-                writeConfigAtomically(serializeConfig());
+                writeConfigAtomically(owner, serializeConfig(owner));
             } catch (Exception error) {
-                plugin.getLogger().log(java.util.logging.Level.SEVERE, "无法保存足球系统配置", error);
+                owner.getLogger().log(java.util.logging.Level.SEVERE, "无法保存足球系统配置", error);
             }
         }
     }
 
     public static void saveAsync() {
-        if (plugin == null || !plugin.isEnabled() || configReloading.get()) return;
+        if (!active || plugin == null || !plugin.isEnabled() || configReloading.get()) return;
         saveVersion.incrementAndGet();
         queueConfigSnapshot();
     }
 
     private static void queueConfigSnapshot() {
-        if (plugin == null || !plugin.isEnabled() || configReloading.get()) return;
+        long generation = lifecycleGeneration.get();
+        Plugin owner = plugin;
+        if (!isActiveGeneration(generation) || owner == null || !owner.isEnabled() || configReloading.get()) return;
         if (!snapshotQueued.compareAndSet(false, true)) return;
         FoliaScheduler.runGlobal(() -> {
             long version = saveVersion.get();
             try {
-                if (!configReloading.get()) {
-                    pendingConfig = new ConfigSnapshot(version, serializeConfig());
-                    queueConfigWriter();
+                if (isActiveGeneration(generation) && !configReloading.get()) {
+                    pendingConfig = new ConfigSnapshot(generation, version, serializeConfig(owner));
+                    queueConfigWriter(generation);
                 }
             } catch (Throwable error) {
-                plugin.getLogger().log(java.util.logging.Level.SEVERE, "无法创建足球系统配置快照", error);
+                if (isActiveGeneration(generation)) {
+                    owner.getLogger().log(java.util.logging.Level.SEVERE, "无法创建足球系统配置快照", error);
+                }
             } finally {
-                snapshotQueued.set(false);
-                if (!configReloading.get() && saveVersion.get() != version) queueConfigSnapshot();
+                if (generation == lifecycleGeneration.get()) {
+                    snapshotQueued.set(false);
+                    if (isActiveGeneration(generation) && !configReloading.get()
+                            && saveVersion.get() != version) queueConfigSnapshot();
+                }
             }
         });
     }
 
-    private static void queueConfigWriter() {
+    private static void queueConfigWriter(long generation) {
+        Plugin owner = plugin;
+        if (!isActiveGeneration(generation) || owner == null) return;
         if (!saveQueued.compareAndSet(false, true)) return;
         FoliaScheduler.runAsync(() -> {
             try {
-                while (true) {
+                while (isActiveGeneration(generation)) {
                     ConfigSnapshot snapshot = pendingConfig;
                     pendingConfig = null;
-                    if (snapshot != null && snapshot.version == saveVersion.get() && !configReloading.get()) {
+                    if (snapshot != null && snapshot.generation == generation
+                            && snapshot.version == saveVersion.get() && !configReloading.get()) {
                         synchronized (SAVE_LOCK) {
-                            writeConfigAtomically(snapshot.data);
+                            if (isActiveGeneration(generation)) {
+                                writeConfigAtomically(owner, snapshot.data);
+                            }
                         }
                     }
                     if (pendingConfig == null) break;
                 }
             } catch (Exception error) {
-                plugin.getLogger().log(java.util.logging.Level.SEVERE, "Unable to save CubeBall configuration asynchronously", error);
+                if (isActiveGeneration(generation)) {
+                    owner.getLogger().log(java.util.logging.Level.SEVERE, "Unable to save CubeBall configuration asynchronously", error);
+                }
             } finally {
-                saveQueued.set(false);
-                if (pendingConfig != null) queueConfigWriter();
+                if (generation == lifecycleGeneration.get()) {
+                    saveQueued.set(false);
+                    if (isActiveGeneration(generation) && pendingConfig != null) queueConfigWriter(generation);
+                }
             }
         });
     }
 
-    private static void writeConfigAtomically(String data) throws java.io.IOException {
-        Path file = plugin.getDataFolder().toPath().resolve("config.yml");
+    private static void writeConfigAtomically(Plugin owner, String data) throws java.io.IOException {
+        Path file = owner.getDataFolder().toPath().resolve("config.yml");
         Files.createDirectories(file.getParent());
         Path temp = file.resolveSibling("config.yml.tmp");
         Files.writeString(temp, data, StandardCharsets.UTF_8,
@@ -404,9 +445,9 @@ public class CubeBall extends JavaPlugin {
         }
     }
 
-    private static String serializeConfig() {
+    private static String serializeConfig(Plugin owner) {
         YamlConfiguration snapshot = new YamlConfiguration();
-        for (String key : plugin.getConfig().getKeys(false)) snapshot.set(key, plugin.getConfig().get(key));
+        for (String key : owner.getConfig().getKeys(false)) snapshot.set(key, owner.getConfig().get(key));
         ConfigurationSection section = new MemoryConfiguration();
         for (Map.Entry<String, Match> match : matches.entrySet()) {
             MemoryConfiguration data = new MemoryConfiguration();
@@ -418,37 +459,46 @@ public class CubeBall extends JavaPlugin {
     }
 
     public static boolean reloadRuntimeSettings(Runnable success, Consumer<Throwable> failure) {
-        if (!(plugin instanceof CubeBall instance) || !configReloading.compareAndSet(false, true)) return false;
+        long generation = lifecycleGeneration.get();
+        if (!isActiveGeneration(generation) || !(plugin instanceof CubeBall instance)
+                || !configReloading.compareAndSet(false, true)) return false;
         saveVersion.incrementAndGet();
         pendingConfig = null;
         FoliaScheduler.runAsync(() -> {
             try {
+                if (!isActiveGeneration(generation)) return;
                 YamlConfiguration loaded;
                 synchronized (SAVE_LOCK) {
+                    if (!isActiveGeneration(generation)) return;
                     loaded = YamlConfiguration.loadConfiguration(instance.getDataFolder().toPath().resolve("config.yml").toFile());
                     String language = loaded.getString("language", "en");
                     I18n.init(instance, language == null ? "en" : language);
                 }
+                if (!isActiveGeneration(generation)) return;
                 FoliaScheduler.runGlobal(() -> {
                     try {
-                        if (!instance.isEnabled()) return;
-                        FileConfiguration active = instance.getConfig();
-                        for (String key : new HashSet<>(active.getKeys(false))) active.set(key, null);
+                        if (!isActiveGeneration(generation) || !instance.isEnabled()) return;
+                        FileConfiguration activeConfig = instance.getConfig();
+                        for (String key : new HashSet<>(activeConfig.getKeys(false))) activeConfig.set(key, null);
                         for (String key : loaded.getKeys(true)) {
-                            if (!loaded.isConfigurationSection(key)) active.set(key, loaded.get(key));
+                            if (!loaded.isConfigurationSection(key)) activeConfig.set(key, loaded.get(key));
                         }
                         instance.applyRuntimeConfig();
                         ResidenceBossBar.refreshAll();
                         success.run();
                     } catch (Throwable throwable) {
-                        failure.accept(throwable);
+                        if (isActiveGeneration(generation)) failure.accept(throwable);
                     } finally {
-                        configReloading.set(false);
+                        if (generation == lifecycleGeneration.get()) configReloading.set(false);
                     }
                 });
             } catch (Throwable throwable) {
-                configReloading.set(false);
-                FoliaScheduler.runGlobal(() -> failure.accept(throwable));
+                if (generation == lifecycleGeneration.get()) configReloading.set(false);
+                if (isActiveGeneration(generation)) {
+                    FoliaScheduler.runGlobal(() -> {
+                        if (isActiveGeneration(generation)) failure.accept(throwable);
+                    });
+                }
             }
         });
         return true;
@@ -602,7 +652,11 @@ public class CubeBall extends JavaPlugin {
                 && data.creatorIdLeast == player.getUniqueId().getLeastSignificantBits();
     }
 
-    private record ConfigSnapshot(long version, String data) {
+    private static boolean isActiveGeneration(long generation) {
+        return active && plugin != null && generation == lifecycleGeneration.get();
+    }
+
+    private record ConfigSnapshot(long generation, long version, String data) {
     }
 
     public static void restorePlayerAndExit(Player player) {
@@ -655,7 +709,7 @@ public class CubeBall extends JavaPlugin {
 
     private static void teleportForExit(Player player, Location spawn, int retries, int exitToken) {
         try {
-            player.teleportAsync(spawn).whenComplete((success, error) -> {
+            FoliaScheduler.teleport(player, spawn).whenComplete((success, error) -> {
                 if (!Objects.equals(exitGenerations.get(player.getUniqueId()), exitToken)) return;
                 if (Boolean.TRUE.equals(success)) {
                     FoliaScheduler.runEntity(player, () -> restorePlayerState(player, exitToken));
