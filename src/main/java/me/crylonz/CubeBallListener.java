@@ -59,7 +59,7 @@ public class CubeBallListener implements Listener {
         if (carrier != null) {
             if (!e.getTo().equals(carrier)) return;
         } else {
-            Material block = match.getData().cubeBallBlock;
+            Material block = match.getData().snapshot().cubeBallBlock();
             if (!e.getTo().equals(block)) return;
         }
         e.setCancelled(true);
@@ -75,7 +75,7 @@ public class CubeBallListener implements Listener {
             velocity = ballData.getBall().getVelocity();
             debug("landing id=" + ballId
                     + " to=" + e.getTo()
-                    + " carrier=" + (carrier == null ? "vanilla:" + match.getData().cubeBallBlock : carrier.getAsString())
+                    + " carrier=" + (carrier == null ? "vanilla:" + match.getData().snapshot().cubeBallBlock() : carrier.getAsString())
                     + " loc=" + e.getEntity().getLocation()
                     + " oldVelocity=" + velocity
                     + " valid=" + ballData.getBall().isValid()
@@ -197,7 +197,7 @@ public class CubeBallListener implements Listener {
         }
         for (Match match : matches.values()) {
             if (match.canUseDash() && match.containsPlayer(event.getPlayer())) {
-                int cd = match.getData().dashCooldown;
+                int cd = match.getData().snapshot().dashCooldown();
                 if (cd <= 0) break;
                 if (!cooldown.containsKey(event.getPlayer().getUniqueId())) {
                     cooldown.put(event.getPlayer().getUniqueId(), System.currentTimeMillis() + cd * 1000L);

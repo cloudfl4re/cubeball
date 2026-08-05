@@ -287,7 +287,7 @@ public final class JoinSignManager {
             sendPlayerMessage(player, I18n.format("lobby_joined", "match", match.getName()));
             sendPlayerMessage(player, I18n.get("lobby_waiting_state_locked"));
             evaluateCountdown(lobby);
-            if (countdownAlreadyRunning && lobby.countdownTask != null) {
+            if (countdownAlreadyRunning && hasCountdown(lobby)) {
                 sendPlayerMessage(player, I18n.format("lobby_countdown_running", "seconds", remainingSeconds(lobby)));
             }
         }, () -> rollbackWaitingJoin(player, I18n.get("lobby_teleport_failed"))),
@@ -332,8 +332,10 @@ public final class JoinSignManager {
     private static Choice getChoice(Player player) {
         Lobby lobby = getLobby(player);
         if (lobby == null) return Choice.NONE;
-        LobbyEntry entry = lobby.players.get(player.getUniqueId());
-        return entry == null ? Choice.NONE : entry.choice;
+        synchronized (lobby) {
+            LobbyEntry entry = lobby.players.get(player.getUniqueId());
+            return entry == null ? Choice.NONE : entry.choice;
+        }
     }
 
     private static void giveLobbyItems(Player player, Choice choice) {
@@ -590,8 +592,16 @@ public final class JoinSignManager {
     }
 
     private static int remainingSeconds(Lobby lobby) {
-        long remaining = lobby.countdownEndsAtMillis - System.currentTimeMillis();
-        return (int) Math.max(1L, (remaining + 999L) / 1000L);
+        synchronized (lobby) {
+            long remaining = lobby.countdownEndsAtMillis - System.currentTimeMillis();
+            return (int) Math.max(1L, (remaining + 999L) / 1000L);
+        }
+    }
+
+    private static boolean hasCountdown(Lobby lobby) {
+        synchronized (lobby) {
+            return lobby.countdownTask != null;
+        }
     }
 
     private static void sendLobbyMessage(Lobby lobby, String message) {

@@ -49,6 +49,7 @@ public final class SettingsMenu {
                 }
 
                 MatchData data = match.getData();
+                MatchData.Snapshot config = data.snapshot();
                 builder.setLorePrefix(ChatColor.GRAY.toString());
                 builder.setSlot(0, 0, teamAccent(TeamColor.RED), "§c红队配置", "§7设置出生点与球门区域");
                 builder.setSlot(8, 0, teamAccent(TeamColor.BLUE), "§9蓝队配置", "§7设置出生点与球门区域");
@@ -79,14 +80,14 @@ public final class SettingsMenu {
                     return;
                 }
 
-                builder.setSlot(1, 1, RED_BED, I18n.get("menu_desc_redspawn"), spawnLore(data.redTeamSpawns.size()))
-                        .setLeftClickAction((p, view) -> addSpawn(p, data.redTeamSpawns, builder))
-                        .setRightClickAction((p, view) -> removeSpawn(p, data.redTeamSpawns, builder))
-                        .setRightShiftClickAction((p, view) -> clearSpawns(p, data.redTeamSpawns, builder));
-                builder.setSlot(7, 1, BLUE_BED, I18n.get("menu_desc_bluespawn"), spawnLore(data.blueTeamSpawns.size()))
-                        .setLeftClickAction((p, view) -> addSpawn(p, data.blueTeamSpawns, builder))
-                        .setRightClickAction((p, view) -> removeSpawn(p, data.blueTeamSpawns, builder))
-                        .setRightShiftClickAction((p, view) -> clearSpawns(p, data.blueTeamSpawns, builder));
+                builder.setSlot(1, 1, RED_BED, I18n.get("menu_desc_redspawn"), spawnLore(config.redTeamSpawns().size()))
+                        .setLeftClickAction((p, view) -> addSpawn(p, data, true, builder))
+                        .setRightClickAction((p, view) -> removeSpawn(p, data, true, builder))
+                        .setRightShiftClickAction((p, view) -> clearSpawns(p, data, true, builder));
+                builder.setSlot(7, 1, BLUE_BED, I18n.get("menu_desc_bluespawn"), spawnLore(config.blueTeamSpawns().size()))
+                        .setLeftClickAction((p, view) -> addSpawn(p, data, false, builder))
+                        .setRightClickAction((p, view) -> removeSpawn(p, data, false, builder))
+                        .setRightShiftClickAction((p, view) -> clearSpawns(p, data, false, builder));
 
                 builder.setSlot(1, 2, RED_BANNER, I18n.get("menu_desc_redgoal"), goalLore(data.getRedTeamGoalSize()))
                         .setLeftClickAction((p, view) -> beginGoalSelection(p, data, true))
@@ -95,11 +96,11 @@ public final class SettingsMenu {
                         .setLeftClickAction((p, view) -> beginGoalSelection(p, data, false))
                         .setRightClickAction((p, view) -> clearGoal(p, data, false, builder));
 
-                Location ballSpawn = data.ballSpawn;
+                Location ballSpawn = config.ballSpawn();
                 builder.setSlot(4, 1, RESPAWN_ANCHOR, I18n.get("menu_desc_ballspawn"), ballSpawnLore(ballSpawn))
                         .setLeftClickAction((p, view) -> {
                             if (!checkResidence(p)) return;
-                            data.ballSpawn = entityToBlock(p.getLocation().add(0, 2, 0));
+                            data.setBallSpawn(entityToBlock(p.getLocation().add(0, 2, 0)));
                             VisualEffects.setupSuccess(p);
                             builder.refresh();
                         });
@@ -122,29 +123,28 @@ public final class SettingsMenu {
                             }));
                         });
 
-                builder.setSlot(2, 3, data.cubeBallBlock, I18n.get("menu_desc_ballblock"),
-                                "§7当前方块: §f" + data.cubeBallBlock.name() + "\n§e左键 §7输入新的原版方块")
+                builder.setSlot(2, 3, config.cubeBallBlock(), I18n.get("menu_desc_ballblock"),
+                                "§7当前方块: §f" + config.cubeBallBlock().name() + "\n§e左键 §7输入新的原版方块")
                         .setLeftClickAction((p, view) -> requestMaterial(p, view, data));
                 builder.setSlot(4, 3, getBallCustomIcon(data), I18n.get("menu_desc_ballcustom"), getBallCustomDesc(data))
                         .setLeftClickAction((p, view) -> setCustomFromHand(p, match, data, builder))
                         .setLeftShiftClickAction((p, view) -> requestCustomId(p, view, data))
                         .setRightClickAction((p, view) -> {
-                            data.ballCustomId = null;
-                            data.ballCustomItem = null;
+                            data.setCustomBall(null, null);
                             p.sendMessage(I18n.get("menu_desc_ballcustom_cleared"));
                             VisualEffects.setupSuccess(p);
                             builder.refresh();
                         });
-                builder.setSlot(6, 3, FEATHER, I18n.get("menu_desc_dashcooldown"), dashLore(data.dashCooldown))
+                builder.setSlot(6, 3, FEATHER, I18n.get("menu_desc_dashcooldown"), dashLore(config.dashCooldown()))
                         .setLeftClickAction((p, view) -> requestNumber(p, view, I18n.get("menu_desc_dashcooldown"), 0, 300,
-                                value -> data.dashCooldown = value));
+                                data::setDashCooldown));
 
-                builder.setSlot(2, 4, CLOCK, I18n.get("menu_desc_settime"), timeLore(data.matchDuration))
+                builder.setSlot(2, 4, CLOCK, I18n.get("menu_desc_settime"), timeLore(config.matchDuration()))
                         .setLeftClickAction((p, view) -> requestNumber(p, view, I18n.get("menu_desc_settime"), 30, 1800,
-                                value -> data.matchDuration = value));
-                builder.setSlot(4, 4, TARGET, I18n.get("menu_desc_settarget"), targetLore(data.maxGoal))
+                                data::setMatchDuration));
+                builder.setSlot(4, 4, TARGET, I18n.get("menu_desc_settarget"), targetLore(config.maxGoal()))
                         .setLeftClickAction((p, view) -> requestNumber(p, view, I18n.get("menu_desc_settarget"), 0, 999,
-                                value -> data.maxGoal = value));
+                                data::setMaxGoal));
 
                 if (match.isInProgress()) {
                     builder.setSlot(6, 4, REDSTONE_BLOCK, "§c终止当前比赛", "§7立即按当前比分结束比赛\n§c此操作不可撤销")
@@ -380,7 +380,7 @@ public final class SettingsMenu {
                 view.sendTo(player);
                 return;
             }
-            data.cubeBallBlock = material;
+            data.setBallMaterial(material);
             VisualEffects.setupSuccess(player);
             view.sendTo(player);
         });
@@ -435,8 +435,7 @@ public final class SettingsMenu {
         ItemStack snapshot = hand.clone();
         snapshot.setAmount(1);
         String id = CraftEngineHook.getCustomItemId(hand);
-        data.ballCustomId = id;
-        data.ballCustomItem = snapshot;
+        data.setCustomBall(id, snapshot);
         CubeBall.debug("menu custom item set match=" + match.getName() + " id=" + id + " item=" + CubeBall.describeItem(snapshot));
         player.sendMessage(I18n.format("menu_desc_ballcustom_set", "id", id == null ? snapshot.getType().name() : id));
         VisualEffects.setupSuccess(player);
@@ -449,40 +448,29 @@ public final class SettingsMenu {
     }
 
     private static void clearGoal(Player player, MatchData data, boolean red, DynamicMenuBuilder<Match> builder) {
-        if (red) {
-            data.redTeamGoalPos1 = null;
-            data.redTeamGoalPos2 = null;
-            data.redTeamGoalBlocks.clear();
-        } else {
-            data.blueTeamGoalPos1 = null;
-            data.blueTeamGoalPos2 = null;
-            data.blueTeamGoalBlocks.clear();
-        }
+        data.clearGoal(red);
         VisualEffects.setupSuccess(player);
         builder.refresh();
     }
 
-    private static void addSpawn(Player player, List<Location> spawns, DynamicMenuBuilder<Match> builder) {
+    private static void addSpawn(Player player, MatchData data, boolean red, DynamicMenuBuilder<Match> builder) {
         if (!checkResidence(player)) return;
-        if (spawns.size() >= MAX_SPAWNS) {
+        if (!data.addSpawn(red, entityToBlock(player.getLocation()), MAX_SPAWNS)) {
             player.sendMessage(I18n.format("menu_spawn_limit", "max", MAX_SPAWNS));
             return;
         }
-        spawns.add(entityToBlock(player.getLocation()));
         VisualEffects.setupSuccess(player);
         builder.refresh();
     }
 
-    private static void removeSpawn(Player player, List<Location> spawns, DynamicMenuBuilder<Match> builder) {
-        if (spawns.isEmpty()) return;
-        spawns.remove(spawns.size() - 1);
+    private static void removeSpawn(Player player, MatchData data, boolean red, DynamicMenuBuilder<Match> builder) {
+        if (!data.removeLastSpawn(red)) return;
         VisualEffects.setupSuccess(player);
         builder.refresh();
     }
 
-    private static void clearSpawns(Player player, List<Location> spawns, DynamicMenuBuilder<Match> builder) {
-        if (spawns.isEmpty()) return;
-        spawns.clear();
+    private static void clearSpawns(Player player, MatchData data, boolean red, DynamicMenuBuilder<Match> builder) {
+        if (!data.clearSpawns(red)) return;
         VisualEffects.setupSuccess(player);
         builder.refresh();
     }
@@ -529,13 +517,15 @@ public final class SettingsMenu {
     }
 
     private static ItemStack getBallCustomIcon(MatchData data) {
-        if (data.ballCustomItem != null && !data.ballCustomItem.getType().isAir()) {
-            ItemStack icon = data.ballCustomItem.clone();
+        MatchData.Snapshot config = data.snapshot();
+        ItemStack customItem = config.ballCustomItem();
+        if (customItem != null && !customItem.getType().isAir()) {
+            ItemStack icon = customItem.clone();
             icon.setAmount(1);
             return icon;
         }
-        if (data.ballCustomId != null && !data.ballCustomId.isEmpty() && CraftEngineHook.isAvailable()) {
-            ItemStack icon = CraftEngineHook.buildCustomItemIcon(data.ballCustomId);
+        if (config.ballCustomId() != null && !config.ballCustomId().isEmpty() && CraftEngineHook.isAvailable()) {
+            ItemStack icon = CraftEngineHook.buildCustomItemIcon(config.ballCustomId());
             if (icon != null) return icon;
         }
         return new ItemStack(PAPER);
@@ -544,8 +534,7 @@ public final class SettingsMenu {
     private static boolean setBallCustomId(MatchData data, Player player, String input) {
         String id = input == null ? "" : input.trim();
         if (id.isEmpty()) {
-            data.ballCustomId = null;
-            data.ballCustomItem = null;
+            data.setCustomBall(null, null);
             player.sendMessage(I18n.get("menu_desc_ballcustom_cleared"));
             return true;
         }
@@ -560,8 +549,7 @@ public final class SettingsMenu {
         } else {
             player.sendMessage(I18n.get("menu_desc_ballcustom_ce_missing"));
         }
-        data.ballCustomId = id;
-        data.ballCustomItem = null;
+        data.setCustomBall(id, null);
         player.sendMessage(I18n.format("menu_desc_ballcustom_set", "id", id));
         return true;
     }
@@ -604,7 +592,8 @@ public final class SettingsMenu {
 
     private static String matchListLore(Match match) {
         MatchData data = match.getData();
-        return "§7创建者: §f" + data.creator
+        MatchData.Snapshot config = data.snapshot();
+        return "§7创建者: §f" + config.creator()
                 + "\n§7状态: " + stateColor(match.getMatchState()) + stateName(match.getMatchState())
                 + "\n§7配置进度: " + completionBar(data)
                 + "\n§7场地世界: §f" + fieldWorld(data)
@@ -613,12 +602,13 @@ public final class SettingsMenu {
     }
 
     private static int completion(MatchData data) {
+        MatchData.Snapshot config = data.snapshot();
         int complete = 0;
-        if (!data.redTeamSpawns.isEmpty()) complete++;
-        if (!data.blueTeamSpawns.isEmpty()) complete++;
-        if (data.hasRedTeamGoalArea()) complete++;
-        if (data.hasBlueTeamGoalArea()) complete++;
-        if (data.ballSpawn != null) complete++;
+        if (!config.redTeamSpawns().isEmpty()) complete++;
+        if (!config.blueTeamSpawns().isEmpty()) complete++;
+        if (config.hasRedTeamGoalArea()) complete++;
+        if (config.hasBlueTeamGoalArea()) complete++;
+        if (config.ballSpawn() != null) complete++;
         return complete;
     }
 
@@ -628,7 +618,8 @@ public final class SettingsMenu {
     }
 
     private static String fieldWorld(MatchData data) {
-        return data.ballSpawn == null || data.ballSpawn.getWorld() == null ? "未设置" : data.ballSpawn.getWorld().getName();
+        Location spawn = data.snapshot().ballSpawn();
+        return spawn == null || spawn.getWorld() == null ? "未设置" : spawn.getWorld().getName();
     }
 
     private static String identityName() {
@@ -682,13 +673,14 @@ public final class SettingsMenu {
                     + "\n§7蓝队: §9" + match.getBlueTeam().size() + " 人"
                     + "\n\n§e左键 §7开始比赛";
         }
+        MatchData.Snapshot config = data.snapshot();
         return "§c尚未满足开赛条件"
-                + readinessLine("红队出生点", !data.redTeamSpawns.isEmpty())
-                + readinessLine("蓝队出生点", !data.blueTeamSpawns.isEmpty())
-                + readinessLine("红队球门", data.hasRedTeamGoalArea())
-                + readinessLine("蓝队球门", data.hasBlueTeamGoalArea())
-                + readinessLine("足球出生点", data.ballSpawn != null)
-                + readinessLine("坐标同一世界", data.isConfiguredForStart())
+                + readinessLine("红队出生点", !config.redTeamSpawns().isEmpty())
+                + readinessLine("蓝队出生点", !config.blueTeamSpawns().isEmpty())
+                + readinessLine("红队球门", config.hasRedTeamGoalArea())
+                + readinessLine("蓝队球门", config.hasBlueTeamGoalArea())
+                + readinessLine("足球出生点", config.ballSpawn() != null)
+                + readinessLine("坐标同一世界", config.isConfiguredForStart())
                 + readinessLine("双方已有玩家", !match.getRedTeam().isEmpty() && !match.getBlueTeam().isEmpty())
                 + "\n\n§e完成配置后重新扫描玩家";
     }
@@ -698,8 +690,10 @@ public final class SettingsMenu {
     }
 
     private static String getBallCustomDesc(MatchData data) {
-        String current = data.ballCustomId;
-        if ((current == null || current.isEmpty()) && data.ballCustomItem != null) current = data.ballCustomItem.getType().name();
+        MatchData.Snapshot config = data.snapshot();
+        String current = config.ballCustomId();
+        ItemStack customItem = config.ballCustomItem();
+        if ((current == null || current.isEmpty()) && customItem != null) current = customItem.getType().name();
         return "§7当前外观: §f" + (current == null || current.isEmpty() ? I18n.get("menu_desc_ballcustom_none") : current)
                 + "\n\n§e左键 §7读取主手物品"
                 + "\n§eShift + 左键 §7输入 CraftEngine ID"

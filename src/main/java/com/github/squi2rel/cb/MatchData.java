@@ -8,6 +8,8 @@ import org.bukkit.configuration.ConfigurationSection;
 import org.bukkit.inventory.ItemStack;
 import org.bukkit.util.BoundingBox;
 
+import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.Objects;
 import java.util.UUID;
@@ -37,31 +39,109 @@ public class MatchData {
     public List<Location> blueTeamSpawns = new CopyOnWriteArrayList<>();
     public List<Location> redTeamSpawns = new CopyOnWriteArrayList<>();
 
-    public void write(ConfigurationSection config) {
-        config.set("creator", creator);
-        config.set("creatorIdMost", creatorIdMost);
-        config.set("creatorIdLeast", creatorIdLeast);
-
-        config.set("cubeBallBlock", cubeBallBlock.name());
-        config.set("ballCustomId", ballCustomId);
-        config.set("ballCustomItem", ballCustomItem);
-        config.set("matchDuration", matchDuration);
-        config.set("maxGoal", maxGoal);
-        config.set("dashCooldown", dashCooldown);
-
-        config.set("ballSpawn", ballSpawn);
-        config.set("blueTeamGoalPos1", blueTeamGoalPos1);
-        config.set("blueTeamGoalPos2", blueTeamGoalPos2);
-        config.set("redTeamGoalPos1", redTeamGoalPos1);
-        config.set("redTeamGoalPos2", redTeamGoalPos2);
-        config.set("blueTeamGoalBlocks", blueTeamGoalBlocks);
-        config.set("redTeamGoalBlocks", redTeamGoalBlocks);
-        config.set("blueTeamSpawns", blueTeamSpawns);
-        config.set("redTeamSpawns", redTeamSpawns);
-        CubeBall.debug("MatchData.write customId=" + ballCustomId + " customItem=" + CubeBall.describeItem(ballCustomItem));
+    public synchronized Snapshot snapshot() {
+        return new Snapshot(
+                creator, creatorIdMost, creatorIdLeast,
+                cubeBallBlock, ballCustomId, ballCustomItem,
+                matchDuration, maxGoal, dashCooldown,
+                ballSpawn,
+                blueTeamGoalPos1, blueTeamGoalPos2,
+                redTeamGoalPos1, redTeamGoalPos2,
+                blueTeamGoalBlocks, redTeamGoalBlocks,
+                blueTeamSpawns, redTeamSpawns
+        );
     }
 
-    public void read(ConfigurationSection config) {
+    public synchronized void setBallSpawn(Location location) {
+        ballSpawn = copyLocation(location);
+    }
+
+    public synchronized void setBallMaterial(Material material) {
+        cubeBallBlock = material == null ? Material.IRON_BLOCK : material;
+    }
+
+    public synchronized void setCustomBall(String id, ItemStack item) {
+        ballCustomId = id;
+        ballCustomItem = copyItem(item);
+    }
+
+    public synchronized void setMatchDuration(int seconds) {
+        matchDuration = Math.max(30, seconds);
+    }
+
+    public synchronized void setMaxGoal(int goals) {
+        maxGoal = Math.max(0, goals);
+    }
+
+    public synchronized void setDashCooldown(int seconds) {
+        dashCooldown = Math.max(0, seconds);
+    }
+
+    public synchronized void setGoal(boolean red, Location first, Location second) {
+        if (red) {
+            redTeamGoalPos1 = copyLocation(first);
+            redTeamGoalPos2 = copyLocation(second);
+            redTeamGoalBlocks.clear();
+        } else {
+            blueTeamGoalPos1 = copyLocation(first);
+            blueTeamGoalPos2 = copyLocation(second);
+            blueTeamGoalBlocks.clear();
+        }
+    }
+
+    public synchronized void clearGoal(boolean red) {
+        setGoal(red, null, null);
+    }
+
+    public synchronized boolean addSpawn(boolean red, Location location, int maximum) {
+        if (location == null || maximum < 1) return false;
+        List<Location> spawns = red ? redTeamSpawns : blueTeamSpawns;
+        if (spawns.size() >= maximum) return false;
+        spawns.add(location.clone());
+        return true;
+    }
+
+    public synchronized boolean removeLastSpawn(boolean red) {
+        List<Location> spawns = red ? redTeamSpawns : blueTeamSpawns;
+        if (spawns.isEmpty()) return false;
+        spawns.remove(spawns.size() - 1);
+        return true;
+    }
+
+    public synchronized boolean clearSpawns(boolean red) {
+        List<Location> spawns = red ? redTeamSpawns : blueTeamSpawns;
+        if (spawns.isEmpty()) return false;
+        spawns.clear();
+        return true;
+    }
+
+    public void write(ConfigurationSection config) {
+        Snapshot data = snapshot();
+        config.set("creator", data.creator());
+        config.set("creatorIdMost", data.creatorIdMost());
+        config.set("creatorIdLeast", data.creatorIdLeast());
+
+        config.set("cubeBallBlock", data.cubeBallBlock().name());
+        config.set("ballCustomId", data.ballCustomId());
+        config.set("ballCustomItem", data.ballCustomItem());
+        config.set("matchDuration", data.matchDuration());
+        config.set("maxGoal", data.maxGoal());
+        config.set("dashCooldown", data.dashCooldown());
+
+        config.set("ballSpawn", data.ballSpawn());
+        config.set("blueTeamGoalPos1", data.blueTeamGoalPos1());
+        config.set("blueTeamGoalPos2", data.blueTeamGoalPos2());
+        config.set("redTeamGoalPos1", data.redTeamGoalPos1());
+        config.set("redTeamGoalPos2", data.redTeamGoalPos2());
+        config.set("blueTeamGoalBlocks", data.blueTeamGoalBlocks());
+        config.set("redTeamGoalBlocks", data.redTeamGoalBlocks());
+        config.set("blueTeamSpawns", data.blueTeamSpawns());
+        config.set("redTeamSpawns", data.redTeamSpawns());
+        CubeBall.debug("MatchData.write customId=" + data.ballCustomId()
+                + " customItem=" + CubeBall.describeItem(data.ballCustomItem()));
+    }
+
+    public synchronized void read(ConfigurationSection config) {
         creator = config.getString("creator");
         creatorIdMost = config.getLong("creatorIdMost");
         creatorIdLeast = config.getLong("creatorIdLeast");
@@ -69,8 +149,7 @@ public class MatchData {
         Material material = getMaterial(config.getString("cubeBallBlock"));
         cubeBallBlock = material == null ? Material.IRON_BLOCK : material;
         ballCustomId = config.getString("ballCustomId");
-        ballCustomItem = config.getItemStack("ballCustomItem");
-        if (ballCustomItem != null) ballCustomItem.setAmount(1);
+        ballCustomItem = copyItem(config.getItemStack("ballCustomItem"));
         matchDuration = Math.max(30, config.getInt("matchDuration", matchDuration));
         maxGoal = Math.max(0, config.getInt("maxGoal", maxGoal));
         dashCooldown = Math.max(0, config.getInt("dashCooldown", dashCooldown));
@@ -103,14 +182,7 @@ public class MatchData {
     }
 
     public boolean isConfiguredForStart() {
-        if (ballSpawn == null || ballSpawn.getWorld() == null
-                || blueTeamSpawns.isEmpty() || redTeamSpawns.isEmpty()
-                || !hasBlueTeamGoalArea() || !hasRedTeamGoalArea()) return false;
-        World world = ballSpawn.getWorld();
-        return locationsBelongTo(world, blueTeamSpawns)
-                && locationsBelongTo(world, redTeamSpawns)
-                && goalBelongsTo(world, blueTeamGoalPos1, blueTeamGoalPos2, blueTeamGoalBlocks)
-                && goalBelongsTo(world, redTeamGoalPos1, redTeamGoalPos2, redTeamGoalBlocks);
+        return snapshot().isConfiguredForStart();
     }
 
     private static boolean goalBelongsTo(World world, Location first, Location second, List<Location> legacy) {
@@ -132,59 +204,61 @@ public class MatchData {
     }
 
     public boolean hasBlueTeamGoalArea() {
-        return hasRegion(blueTeamGoalPos1, blueTeamGoalPos2) || !blueTeamGoalBlocks.isEmpty();
+        return snapshot().hasBlueTeamGoalArea();
     }
 
     public boolean hasRedTeamGoalArea() {
-        return hasRegion(redTeamGoalPos1, redTeamGoalPos2) || !redTeamGoalBlocks.isEmpty();
+        return snapshot().hasRedTeamGoalArea();
     }
 
     public boolean isInBlueTeamGoal(Location location) {
-        return isInRegion(location, blueTeamGoalPos1, blueTeamGoalPos2) || isInLegacyGoal(location, blueTeamGoalBlocks);
+        return snapshot().isInBlueTeamGoal(location);
     }
 
     public boolean isInRedTeamGoal(Location location) {
-        return isInRegion(location, redTeamGoalPos1, redTeamGoalPos2) || isInLegacyGoal(location, redTeamGoalBlocks);
+        return snapshot().isInRedTeamGoal(location);
     }
 
     public boolean intersectsBlueTeamGoal(World world, BoundingBox box) {
-        return intersectsRegion(world, box, blueTeamGoalPos1, blueTeamGoalPos2);
+        return snapshot().intersectsBlueTeamGoal(world, box);
     }
 
     public boolean intersectsRedTeamGoal(World world, BoundingBox box) {
-        return intersectsRegion(world, box, redTeamGoalPos1, redTeamGoalPos2);
+        return snapshot().intersectsRedTeamGoal(world, box);
     }
 
     public boolean isNearBlueTeamGoal(Location location, double radius) {
-        return isNearRegion(location, blueTeamGoalPos1, blueTeamGoalPos2, radius) || isNearLegacyGoal(location, blueTeamGoalBlocks, radius);
+        return snapshot().isNearBlueTeamGoal(location, radius);
     }
 
     public boolean isNearRedTeamGoal(Location location, double radius) {
-        return isNearRegion(location, redTeamGoalPos1, redTeamGoalPos2, radius) || isNearLegacyGoal(location, redTeamGoalBlocks, radius);
+        return snapshot().isNearRedTeamGoal(location, radius);
     }
 
     public Location getBlueTeamGoalCenter() {
-        return getRegionCenter(blueTeamGoalPos1, blueTeamGoalPos2, blueTeamGoalBlocks);
+        Snapshot data = snapshot();
+        return getRegionCenter(data.blueTeamGoalPos1(), data.blueTeamGoalPos2(), data.blueTeamGoalBlocks());
     }
 
     public Location getRedTeamGoalCenter() {
-        return getRegionCenter(redTeamGoalPos1, redTeamGoalPos2, redTeamGoalBlocks);
+        Snapshot data = snapshot();
+        return getRegionCenter(data.redTeamGoalPos1(), data.redTeamGoalPos2(), data.redTeamGoalBlocks());
     }
 
     public Location getBlueTeamGoalPos1() {
-        return blueTeamGoalPos1;
+        return snapshot().blueTeamGoalPos1();
     }
 
     public Location getBlueTeamGoalPos2() {
-        return blueTeamGoalPos2;
+        return snapshot().blueTeamGoalPos2();
     }
 
     public Location getRedTeamGoalPos1() {
-        return redTeamGoalPos1;
+        return snapshot().redTeamGoalPos1();
     }
 
     public Location getRedTeamGoalPos2() {
-        return redTeamGoalPos2;
+        return snapshot().redTeamGoalPos2();
     }
 
     public boolean isNearAnyGoal(Location location, double radius) {
@@ -192,11 +266,17 @@ public class MatchData {
     }
 
     public int getBlueTeamGoalSize() {
-        return getRegionSize(blueTeamGoalPos1, blueTeamGoalPos2, blueTeamGoalBlocks);
+        Snapshot data = snapshot();
+        return getRegionSize(data.blueTeamGoalPos1(), data.blueTeamGoalPos2(), data.blueTeamGoalBlocks());
     }
 
     public int getRedTeamGoalSize() {
-        return getRegionSize(redTeamGoalPos1, redTeamGoalPos2, redTeamGoalBlocks);
+        Snapshot data = snapshot();
+        return getRegionSize(data.redTeamGoalPos1(), data.redTeamGoalPos2(), data.redTeamGoalBlocks());
+    }
+
+    private static boolean hasGoalArea(Location first, Location second, List<Location> legacy) {
+        return hasRegion(first, second) || !legacy.isEmpty();
     }
 
     private static boolean hasRegion(Location a, Location b) {
@@ -281,6 +361,161 @@ public class MatchData {
                 * (Math.abs(a.getBlockY() - b.getBlockY()) + 1)
                 * (Math.abs(a.getBlockZ() - b.getBlockZ()) + 1);
         return size > Integer.MAX_VALUE ? Integer.MAX_VALUE : (int) size;
+    }
+
+    private static Location copyLocation(Location location) {
+        return location == null ? null : location.clone();
+    }
+
+    private static ItemStack copyItem(ItemStack item) {
+        if (item == null) return null;
+        ItemStack copy = item.clone();
+        copy.setAmount(1);
+        return copy;
+    }
+
+    private static List<Location> copyLocations(List<Location> locations) {
+        List<Location> copy = new ArrayList<>(locations.size());
+        for (Location location : locations) {
+            copy.add(copyLocation(location));
+        }
+        return Collections.unmodifiableList(copy);
+    }
+
+    public record Snapshot(
+            String creator,
+            long creatorIdMost,
+            long creatorIdLeast,
+            Material cubeBallBlock,
+            String ballCustomId,
+            ItemStack ballCustomItem,
+            int matchDuration,
+            int maxGoal,
+            int dashCooldown,
+            Location ballSpawn,
+            Location blueTeamGoalPos1,
+            Location blueTeamGoalPos2,
+            Location redTeamGoalPos1,
+            Location redTeamGoalPos2,
+            List<Location> blueTeamGoalBlocks,
+            List<Location> redTeamGoalBlocks,
+            List<Location> blueTeamSpawns,
+            List<Location> redTeamSpawns
+    ) {
+        public Snapshot {
+            ballCustomItem = copyItem(ballCustomItem);
+            ballSpawn = copyLocation(ballSpawn);
+            blueTeamGoalPos1 = copyLocation(blueTeamGoalPos1);
+            blueTeamGoalPos2 = copyLocation(blueTeamGoalPos2);
+            redTeamGoalPos1 = copyLocation(redTeamGoalPos1);
+            redTeamGoalPos2 = copyLocation(redTeamGoalPos2);
+            blueTeamGoalBlocks = copyLocations(blueTeamGoalBlocks);
+            redTeamGoalBlocks = copyLocations(redTeamGoalBlocks);
+            blueTeamSpawns = copyLocations(blueTeamSpawns);
+            redTeamSpawns = copyLocations(redTeamSpawns);
+        }
+
+        @Override
+        public ItemStack ballCustomItem() {
+            return copyItem(ballCustomItem);
+        }
+
+        @Override
+        public Location ballSpawn() {
+            return copyLocation(ballSpawn);
+        }
+
+        @Override
+        public Location blueTeamGoalPos1() {
+            return copyLocation(blueTeamGoalPos1);
+        }
+
+        @Override
+        public Location blueTeamGoalPos2() {
+            return copyLocation(blueTeamGoalPos2);
+        }
+
+        @Override
+        public Location redTeamGoalPos1() {
+            return copyLocation(redTeamGoalPos1);
+        }
+
+        @Override
+        public Location redTeamGoalPos2() {
+            return copyLocation(redTeamGoalPos2);
+        }
+
+        @Override
+        public List<Location> blueTeamGoalBlocks() {
+            return copyLocations(blueTeamGoalBlocks);
+        }
+
+        @Override
+        public List<Location> redTeamGoalBlocks() {
+            return copyLocations(redTeamGoalBlocks);
+        }
+
+        @Override
+        public List<Location> blueTeamSpawns() {
+            return copyLocations(blueTeamSpawns);
+        }
+
+        @Override
+        public List<Location> redTeamSpawns() {
+            return copyLocations(redTeamSpawns);
+        }
+
+        public boolean isConfiguredForStart() {
+            Location spawn = ballSpawn();
+            if (spawn == null || spawn.getWorld() == null
+                    || blueTeamSpawns.isEmpty() || redTeamSpawns.isEmpty()
+                    || !hasBlueTeamGoalArea() || !hasRedTeamGoalArea()) return false;
+            World world = spawn.getWorld();
+            return locationsBelongTo(world, blueTeamSpawns)
+                    && locationsBelongTo(world, redTeamSpawns)
+                    && goalBelongsTo(world, blueTeamGoalPos1, blueTeamGoalPos2, blueTeamGoalBlocks)
+                    && goalBelongsTo(world, redTeamGoalPos1, redTeamGoalPos2, redTeamGoalBlocks);
+        }
+
+        public boolean hasBlueTeamGoalArea() {
+            return hasGoalArea(blueTeamGoalPos1, blueTeamGoalPos2, blueTeamGoalBlocks);
+        }
+
+        public boolean hasRedTeamGoalArea() {
+            return hasGoalArea(redTeamGoalPos1, redTeamGoalPos2, redTeamGoalBlocks);
+        }
+
+        public boolean isInBlueTeamGoal(Location location) {
+            return isInRegion(location, blueTeamGoalPos1, blueTeamGoalPos2)
+                    || isInLegacyGoal(location, blueTeamGoalBlocks);
+        }
+
+        public boolean isInRedTeamGoal(Location location) {
+            return isInRegion(location, redTeamGoalPos1, redTeamGoalPos2)
+                    || isInLegacyGoal(location, redTeamGoalBlocks);
+        }
+
+        public boolean intersectsBlueTeamGoal(World world, BoundingBox box) {
+            return intersectsRegion(world, box, blueTeamGoalPos1, blueTeamGoalPos2);
+        }
+
+        public boolean intersectsRedTeamGoal(World world, BoundingBox box) {
+            return intersectsRegion(world, box, redTeamGoalPos1, redTeamGoalPos2);
+        }
+
+        public boolean isNearBlueTeamGoal(Location location, double radius) {
+            return isNearRegion(location, blueTeamGoalPos1, blueTeamGoalPos2, radius)
+                    || isNearLegacyGoal(location, blueTeamGoalBlocks, radius);
+        }
+
+        public boolean isNearRedTeamGoal(Location location, double radius) {
+            return isNearRegion(location, redTeamGoalPos1, redTeamGoalPos2, radius)
+                    || isNearLegacyGoal(location, redTeamGoalBlocks, radius);
+        }
+
+        public boolean isNearAnyGoal(Location location, double radius) {
+            return isNearBlueTeamGoal(location, radius) || isNearRedTeamGoal(location, radius);
+        }
     }
 
     @SuppressWarnings("unchecked")

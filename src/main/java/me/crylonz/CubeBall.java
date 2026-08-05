@@ -205,21 +205,24 @@ public class CubeBall extends JavaPlugin {
      * 否则尝试 CE 解析，命中用 CE 结果，未命中/CE 未装回退原版并 warn 一次。
      */
     private static BallAppearance resolveAppearance(MatchData data) {
-        debug("resolveAppearance customId=" + data.ballCustomId
-                + " customItem=" + describeItem(data.ballCustomItem)
-                + " carrier=" + data.cubeBallBlock);
-        if (data.ballCustomItem != null && !data.ballCustomItem.getType().isAir()) {
-            ItemStack item = data.ballCustomItem.clone();
+        MatchData.Snapshot snapshot = data.snapshot();
+        ItemStack customItem = snapshot.ballCustomItem();
+        Material carrier = snapshot.cubeBallBlock();
+        debug("resolveAppearance customId=" + snapshot.ballCustomId()
+                + " customItem=" + describeItem(customItem)
+                + " carrier=" + carrier);
+        if (customItem != null && !customItem.getType().isAir()) {
+            ItemStack item = customItem.clone();
             item.setAmount(1);
             debug("resolveAppearance using saved ItemStack snapshot item=" + describeItem(item)
                     + " carrier=" + ITEM_BALL_CARRIER);
             return new BallAppearance(Bukkit.createBlockData(ITEM_BALL_CARRIER), item, true);
         }
 
-        String customId = data.ballCustomId;
+        String customId = snapshot.ballCustomId();
         if (customId != null && !customId.isEmpty()) {
             if (CraftEngineHook.isAvailable()) {
-                BallAppearance app = CraftEngineHook.resolve(customId, data.cubeBallBlock);
+                BallAppearance app = CraftEngineHook.resolve(customId, carrier);
                 if (app != null) {
                     debug("resolveAppearance using CraftEngine id=" + customId
                             + " itemMode=" + app.isItemDisplayMode()
@@ -229,12 +232,12 @@ public class CubeBall extends JavaPlugin {
                     }
                     return app;
                 }
-                warnAppearanceOnce("missing:" + customId, "CraftEngine custom id not found: " + customId + ", falling back to " + data.cubeBallBlock);
+                warnAppearanceOnce("missing:" + customId, "CraftEngine custom id not found: " + customId + ", falling back to " + carrier);
             } else {
-                warnAppearanceOnce("no-ce:" + customId, "ballCustomId is set (" + customId + ") but CraftEngine is not installed, falling back to " + data.cubeBallBlock);
+                warnAppearanceOnce("no-ce:" + customId, "ballCustomId is set (" + customId + ") but CraftEngine is not installed, falling back to " + carrier);
             }
         }
-        return new BallAppearance(Bukkit.createBlockData(data.cubeBallBlock), null, false);
+        return new BallAppearance(Bukkit.createBlockData(carrier), null, false);
     }
 
     private static void warnAppearanceOnce(String key, String message) {
@@ -645,11 +648,12 @@ public class CubeBall extends JavaPlugin {
 
     public static boolean isMatchOwner(Player player, MatchData data) {
         if (player == null || data == null) return false;
+        MatchData.Snapshot snapshot = data.snapshot();
         if (usesNameIdentity()) {
-            return data.creator != null && data.creator.equalsIgnoreCase(player.getName());
+            return snapshot.creator() != null && snapshot.creator().equalsIgnoreCase(player.getName());
         }
-        return data.creatorIdMost == player.getUniqueId().getMostSignificantBits()
-                && data.creatorIdLeast == player.getUniqueId().getLeastSignificantBits();
+        return snapshot.creatorIdMost() == player.getUniqueId().getMostSignificantBits()
+                && snapshot.creatorIdLeast() == player.getUniqueId().getLeastSignificantBits();
     }
 
     private static boolean isActiveGeneration(long generation) {

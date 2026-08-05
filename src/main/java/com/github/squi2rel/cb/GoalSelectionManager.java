@@ -75,15 +75,7 @@ public final class GoalSelectionManager {
     }
 
     private static void save(Selection selection) {
-        if (selection.redTeamGoal) {
-            selection.data.redTeamGoalPos1 = selection.pos1;
-            selection.data.redTeamGoalPos2 = selection.pos2;
-            selection.data.redTeamGoalBlocks.clear();
-        } else {
-            selection.data.blueTeamGoalPos1 = selection.pos1;
-            selection.data.blueTeamGoalPos2 = selection.pos2;
-            selection.data.blueTeamGoalBlocks.clear();
-        }
+        selection.data.setGoal(selection.redTeamGoal, selection.pos1, selection.pos2);
     }
 
     private static int goalSize(Location a, Location b) {

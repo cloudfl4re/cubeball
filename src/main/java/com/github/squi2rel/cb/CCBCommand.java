@@ -147,8 +147,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
             ItemStack snapshot = hand.clone();
             snapshot.setAmount(1);
             String id = CraftEngineHook.getCustomItemId(hand);
-            match.getData().ballCustomId = id;
-            match.getData().ballCustomItem = snapshot;
+            match.getData().setCustomBall(id, snapshot);
             CubeBall.saveAsync();
             CubeBall.debug("command setballhand match=" + match.getName()
                     + " id=" + id
@@ -174,8 +173,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
 
             String id = args[2].trim();
             if (id.equalsIgnoreCase("clear") || id.equalsIgnoreCase("none") || id.equalsIgnoreCase("off")) {
-                match.getData().ballCustomId = null;
-                match.getData().ballCustomItem = null;
+                match.getData().setCustomBall(null, null);
                 CubeBall.saveAsync();
                 CubeBall.debug("command setballce cleared match=" + match.getName());
                 sender.sendMessage(systemMessage("CraftEngine ball cleared for " + match.getName()));
@@ -197,8 +195,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(systemMessage("Warning: CraftEngine is not installed; saved id anyway."));
             }
 
-            match.getData().ballCustomId = id;
-            match.getData().ballCustomItem = null;
+            match.getData().setCustomBall(id, null);
             CubeBall.saveAsync();
             CubeBall.debug("command setballce match=" + match.getName()
                     + " id=" + id

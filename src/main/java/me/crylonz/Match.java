@@ -103,8 +103,9 @@ public class Match {
             });
         }
 
-        List<Location> blueSpawns = new ArrayList<>(data.blueTeamSpawns);
-        List<Location> redSpawns = new ArrayList<>(data.redTeamSpawns);
+        MatchData.Snapshot config = data.snapshot();
+        List<Location> blueSpawns = new ArrayList<>(config.blueTeamSpawns());
+        List<Location> redSpawns = new ArrayList<>(config.redTeamSpawns());
         List<Player> onlinePlayers = new ArrayList<>(Bukkit.getOnlinePlayers());
         int taskCount = blueSpawns.size() + redSpawns.size() + onlinePlayers.size();
         if (taskCount <= 0) {
@@ -121,15 +122,16 @@ public class Match {
             scanNearPlayers(spawn, Team.RED, remaining, scanToken, completion);
         }
 
-        World world = data.ballSpawn.getWorld();
+        Location fieldOrigin = config.ballSpawn();
+        World world = fieldOrigin.getWorld();
         for (Player player : onlinePlayers) {
             FoliaScheduler.runEntity(player, () -> {
                 try {
                     synchronized (Match.this) {
                         if (scanGeneration.get() != scanToken || matchState != CREATED || canceled) return;
                         if (player.getWorld() != world) return;
-                        boolean nearGoal = data.isNearAnyGoal(player.getLocation(), 100.0);
-                        boolean nearField = player.getLocation().distance(data.ballSpawn) < 256 || nearGoal;
+                        boolean nearGoal = config.isNearAnyGoal(player.getLocation(), 100.0);
+                        boolean nearField = player.getLocation().distance(fieldOrigin) < 256 || nearGoal;
                         if (nearField && !isExiting(player.getUniqueId()) && !isPlayerInOtherActiveMatch(player.getUniqueId())
                                 && !blueTeam.contains(player) && !redTeam.contains(player) && !spectatorTeam.contains(player)) {
                             addPlayerToTeam(player, Team.SPECTATOR);
@@ -191,17 +193,17 @@ public class Match {
                 return remove;
             });
             if (!blueTeam.isEmpty() && !redTeam.isEmpty() && isConfiguredForStart()) {
-                sortSpawns();
-
+                MatchData.Snapshot config = data.snapshot();
                 startDelayedRound();
-                matchTimer = data.matchDuration;
+                matchTimer = config.matchDuration();
                 matchState = IN_PROGRESS;
                 ResidenceBossBar.refreshAll();
 
                 sendPlayerMessage(p, I18n.get("match_starting"));
                 forEachPlayer(true, player -> {
                     player.sendMessage(I18n.format("match_started", "min", matchTimer / 60, "sec", matchTimer - ((matchTimer / 60) * 60)));
-                    player.sendMessage(I18n.format("max_goals", "max", data.maxGoal <= 0 ? I18n.get("max_goals_unlimited") : data.maxGoal));
+                    player.sendMessage(I18n.format("max_goals", "max",
+                            config.maxGoal() <= 0 ? I18n.get("max_goals_unlimited") : config.maxGoal()));
                 });
             } else {
                 sendPlayerMessage(p, I18n.get("need_add_players"));
@@ -209,12 +211,6 @@ public class Match {
         } else {
             sendPlayerMessage(p, I18n.get("match_not_ready"));
         }
-    }
-
-    private void sortSpawns() {
-        Comparator<Location> sort = Comparator.comparingDouble(l -> l.distance(data.ballSpawn));
-        data.blueTeamSpawns.sort(sort);
-        data.redTeamSpawns.sort(sort);
     }
 
     public int[] randomIds(int size, int n) {
@@ -243,11 +239,15 @@ public class Match {
     }
 
     public void teleportTeam(Set<Player> team, List<Location> spawns) {
+        teleportTeam(team, spawns, data.snapshot().ballSpawn());
+    }
+
+    private void teleportTeam(Set<Player> team, List<Location> spawns, Location ballSpawn) {
         if (spawns.isEmpty()) return;
         int[] ids = randomIds(spawns.size(), team.size());
         int i = 0;
         for (Player player : team) {
-            Location target = getFacingLocation(spawns.get(ids[i++]), data.ballSpawn);
+            Location target = getFacingLocation(spawns.get(ids[i++]), ballSpawn);
             runForPlayer(player, p -> {
                 try {
                     FoliaScheduler.teleport(p, target).whenComplete((success, error) -> {
@@ -285,11 +285,19 @@ public class Match {
     private synchronized void startDelayedRound(long goDelayTicks, boolean resumeCountdown) {
         int roundToken = beginRoundSequence();
         roundCountdownActive = true;
-        teleportTeam(blueTeam, data.blueTeamSpawns);
-        teleportTeam(redTeam, data.redTeamSpawns);
+        MatchData.Snapshot config = data.snapshot();
+        Location ballSpawn = config.ballSpawn();
+        List<Location> blueSpawns = new ArrayList<>(config.blueTeamSpawns());
+        List<Location> redSpawns = new ArrayList<>(config.redTeamSpawns());
+        Comparator<Location> sort = Comparator.comparingDouble(location -> location.distance(ballSpawn));
+        blueSpawns.sort(sort);
+        redSpawns.sort(sort);
+        teleportTeam(blueTeam, blueSpawns, ballSpawn);
+        teleportTeam(redTeam, redSpawns, ballSpawn);
 
         PotionEffect effect = new PotionEffect(PotionEffectType.SLOWNESS, 60, 255);
-        List<Location> allSpawns = getAllSpawns();
+        List<Location> allSpawns = new ArrayList<>(blueSpawns);
+        allSpawns.addAll(redSpawns);
         for (Location spawn : allSpawns) setSurrounding(spawn, Material.BARRIER);
         forEachPlayer(false, player -> {
             PlayerStateCache.saveThen(player, () -> {
@@ -323,16 +331,17 @@ public class Match {
         scheduleRoundTask(roundToken, () -> {
             sendMessageToAllPlayer(I18n.get("go"), "", 1, Sound.BLOCK_NOTE_BLOCK_BELL, 2);
             forEachPlayer(true, VisualEffects::roundStart);
-            for (Location spawn : getAllSpawns()) setSurrounding(spawn, Material.AIR);
+            for (Location spawn : allSpawns) setSurrounding(spawn, Material.AIR);
             if (!isRoundActive(roundToken)) return;
-            FoliaScheduler.runRegion(data.ballSpawn, () -> startRound(roundToken));
+            FoliaScheduler.runRegion(ballSpawn, () -> startRound(roundToken));
         }, goDelayTicks);
     }
 
     private List<Location> getAllSpawns() {
+        MatchData.Snapshot config = data.snapshot();
         ArrayList<Location> allSpawns = new ArrayList<>();
-        allSpawns.addAll(data.blueTeamSpawns);
-        allSpawns.addAll(data.redTeamSpawns);
+        allSpawns.addAll(config.blueTeamSpawns());
+        allSpawns.addAll(config.redTeamSpawns());
         return allSpawns;
     }
 
@@ -342,7 +351,8 @@ public class Match {
         lastTouchPlayer = null;
         matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
         removeBall();
-        generateBall(data, name, data.ballSpawn, null);
+        MatchData.Snapshot config = data.snapshot();
+        generateBall(data, name, config.ballSpawn(), null);
     }
 
     private int beginRoundSequence() {
@@ -517,8 +527,9 @@ public class Match {
     }
 
     public int getTeamMaxSize(Team team) {
-        if (team == Team.BLUE) return data.blueTeamSpawns.size();
-        if (team == Team.RED) return data.redTeamSpawns.size();
+        MatchData.Snapshot config = data.snapshot();
+        if (team == Team.BLUE) return config.blueTeamSpawns().size();
+        if (team == Team.RED) return config.redTeamSpawns().size();
         return Integer.MAX_VALUE;
     }
 
@@ -659,12 +670,13 @@ public class Match {
 
     public synchronized void checkGoal(Location ballLocation) {
         if (matchState == IN_PROGRESS || matchState == OVERTIME) {
-            if (data.isInBlueTeamGoal(ballLocation)) {
+            MatchData.Snapshot config = data.snapshot();
+            if (config.isInBlueTeamGoal(ballLocation)) {
                 goal(Team.RED);
                 return;
             }
 
-            if (data.isInRedTeamGoal(ballLocation)) {
+            if (config.isInRedTeamGoal(ballLocation)) {
                 goal(Team.BLUE);
             }
         }
@@ -675,12 +687,15 @@ public class Match {
         Ball currentBall = balls.get(name);
         if (currentBall == null || currentBall.getBall() != ball) return;
         if (matchState == IN_PROGRESS || matchState == OVERTIME) {
-            if (data.intersectsBlueTeamGoal(ball.getWorld(), ball.getBoundingBox()) || data.isInBlueTeamGoal(ball.getLocation())) {
+            MatchData.Snapshot config = data.snapshot();
+            if (config.intersectsBlueTeamGoal(ball.getWorld(), ball.getBoundingBox())
+                    || config.isInBlueTeamGoal(ball.getLocation())) {
                 goal(Team.RED);
                 return;
             }
 
-            if (data.intersectsRedTeamGoal(ball.getWorld(), ball.getBoundingBox()) || data.isInRedTeamGoal(ball.getLocation())) {
+            if (config.intersectsRedTeamGoal(ball.getWorld(), ball.getBoundingBox())
+                    || config.isInRedTeamGoal(ball.getLocation())) {
                 goal(Team.BLUE);
             }
         }
@@ -698,7 +713,9 @@ public class Match {
         if (lastTouchPlayer != null) goals.merge(lastTouchPlayer, 1, Integer::sum);
         ResidenceBossBar.refreshAll();
 
-        if (matchState == IN_PROGRESS && (data.maxGoal <= 0 || (blueScore != data.maxGoal && redScore != data.maxGoal))) {
+        int maximumGoals = data.snapshot().maxGoal();
+        if (matchState == IN_PROGRESS && (maximumGoals <= 0
+                || (blueScore != maximumGoals && redScore != maximumGoals))) {
             sendScoreToPlayer();
             matchState = GOAL;
             scheduleGoalRestart();
