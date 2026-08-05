@@ -1,11 +1,11 @@
 name: cubeball
 main: me.crylonz.CubeBall
-version: 1.1.1
+version: 1.1.2
 author: xWtree
 contributors: [Crylonz, squi2rel, cloudfl4re]
 website: https://github.com/mcxqk
-description: 支持 Folia/Paper 1.21.11 的方块足球小游戏
-api-version: "1.21.11"
+description: 支持 Luminol/Folia/Paper 26.2 的方块足球小游戏
+api-version: "26.2"
 folia-supported: true
 softdepend:
   - CraftEngine

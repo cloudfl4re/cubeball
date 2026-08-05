@@ -6,10 +6,10 @@
 
     <groupId>my.crylonz</groupId>
     <artifactId>cubeball</artifactId>
-    <version>1.1.1</version>
+    <version>1.1.2</version>
 
     <properties>
-        <maven.compiler.release>21</maven.compiler.release>
+        <maven.compiler.release>25</maven.compiler.release>
         <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
     </properties>
 
@@ -18,7 +18,7 @@
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
-                <version>3.6.0</version>
+                <version>3.6.2</version>
                 <configuration>
                     <createDependencyReducedPom>false</createDependencyReducedPom>
                     <relocations>
@@ -50,6 +50,10 @@
     </build>
     <repositories>
         <repository>
+            <id>bacteriawa</id>
+            <url>https://repo.bacteriawa.com/repository/maven-public/</url>
+        </repository>
+        <repository>
             <id>papermc</id>
             <url>https://repo.papermc.io/repository/maven-public/</url>
         </repository>
@@ -60,9 +64,9 @@
     </repositories>
     <dependencies>
         <dependency>
-            <groupId>io.papermc.paper</groupId>
-            <artifactId>paper-api</artifactId>
-            <version>1.21.11-R0.1-SNAPSHOT</version>
+            <groupId>me.earthme.luminol</groupId>
+            <artifactId>luminol-api</artifactId>
+            <version>26.2.build.726-stable</version>
             <type>jar</type>
             <scope>provided</scope>
         </dependency>
