@@ -58,6 +58,7 @@ public class Match {
     private volatile boolean blueTimeoutUsed;
     private volatile boolean redTimeoutUsed;
     private final MatchData data;
+    private volatile MatchData.Snapshot activeConfig;
 
     public Match(String name, Player player) {
         this(name, MatchData.create(player.getName(), player.getUniqueId()));
@@ -192,8 +193,9 @@ public class Match {
                 if (remove && player != null) invalidateSpectatorState(player.getUniqueId());
                 return remove;
             });
-            if (!blueTeam.isEmpty() && !redTeam.isEmpty() && isConfiguredForStart()) {
-                MatchData.Snapshot config = data.snapshot();
+            MatchData.Snapshot config = data.snapshot();
+            if (!blueTeam.isEmpty() && !redTeam.isEmpty() && config.isConfiguredForStart()) {
+                activeConfig = config;
                 startDelayedRound();
                 matchTimer = config.matchDuration();
                 matchState = IN_PROGRESS;
@@ -239,7 +241,7 @@ public class Match {
     }
 
     public void teleportTeam(Set<Player> team, List<Location> spawns) {
-        teleportTeam(team, spawns, data.snapshot().ballSpawn());
+        teleportTeam(team, spawns, currentConfig().ballSpawn());
     }
 
     private void teleportTeam(Set<Player> team, List<Location> spawns, Location ballSpawn) {
@@ -285,7 +287,7 @@ public class Match {
     private synchronized void startDelayedRound(long goDelayTicks, boolean resumeCountdown) {
         int roundToken = beginRoundSequence();
         roundCountdownActive = true;
-        MatchData.Snapshot config = data.snapshot();
+        MatchData.Snapshot config = currentConfig();
         Location ballSpawn = config.ballSpawn();
         List<Location> blueSpawns = new ArrayList<>(config.blueTeamSpawns());
         List<Location> redSpawns = new ArrayList<>(config.redTeamSpawns());
@@ -338,7 +340,7 @@ public class Match {
     }
 
     private List<Location> getAllSpawns() {
-        MatchData.Snapshot config = data.snapshot();
+        MatchData.Snapshot config = currentConfig();
         ArrayList<Location> allSpawns = new ArrayList<>();
         allSpawns.addAll(config.blueTeamSpawns());
         allSpawns.addAll(config.redTeamSpawns());
@@ -351,8 +353,8 @@ public class Match {
         lastTouchPlayer = null;
         matchState = matchTimer > 0 ? IN_PROGRESS : OVERTIME;
         removeBall();
-        MatchData.Snapshot config = data.snapshot();
-        generateBall(data, name, config.ballSpawn(), null);
+        MatchData.Snapshot config = currentConfig();
+        generateBall(config, name, config.ballSpawn(), null);
     }
 
     private int beginRoundSequence() {
@@ -527,7 +529,7 @@ public class Match {
     }
 
     public int getTeamMaxSize(Team team) {
-        MatchData.Snapshot config = data.snapshot();
+        MatchData.Snapshot config = currentConfig();
         if (team == Team.BLUE) return config.blueTeamSpawns().size();
         if (team == Team.RED) return config.redTeamSpawns().size();
         return Integer.MAX_VALUE;
@@ -670,7 +672,7 @@ public class Match {
 
     public synchronized void checkGoal(Location ballLocation) {
         if (matchState == IN_PROGRESS || matchState == OVERTIME) {
-            MatchData.Snapshot config = data.snapshot();
+            MatchData.Snapshot config = currentConfig();
             if (config.isInBlueTeamGoal(ballLocation)) {
                 goal(Team.RED);
                 return;
@@ -687,7 +689,7 @@ public class Match {
         Ball currentBall = balls.get(name);
         if (currentBall == null || currentBall.getBall() != ball) return;
         if (matchState == IN_PROGRESS || matchState == OVERTIME) {
-            MatchData.Snapshot config = data.snapshot();
+            MatchData.Snapshot config = currentConfig();
             if (config.intersectsBlueTeamGoal(ball.getWorld(), ball.getBoundingBox())
                     || config.isInBlueTeamGoal(ball.getLocation())) {
                 goal(Team.RED);
@@ -713,7 +715,7 @@ public class Match {
         if (lastTouchPlayer != null) goals.merge(lastTouchPlayer, 1, Integer::sum);
         ResidenceBossBar.refreshAll();
 
-        int maximumGoals = data.snapshot().maxGoal();
+        int maximumGoals = currentConfig().maxGoal();
         if (matchState == IN_PROGRESS && (maximumGoals <= 0
                 || (blueScore != maximumGoals && redScore != maximumGoals))) {
             sendScoreToPlayer();
@@ -854,6 +856,7 @@ public class Match {
         redTimeoutUsed = false;
         roundCountdownActive = false;
         canceled = false;
+        activeConfig = null;
         ResidenceBossBar.refreshAll();
     }
 
@@ -1078,6 +1081,15 @@ public class Match {
         return data;
     }
 
+    public MatchData.Snapshot getConfigSnapshot() {
+        return currentConfig();
+    }
+
+    private MatchData.Snapshot currentConfig() {
+        MatchData.Snapshot config = activeConfig;
+        return config == null ? data.snapshot() : config;
+    }
+
     public synchronized void shutdown() {
         canceled = true;
         roundGeneration.incrementAndGet();
@@ -1088,6 +1100,7 @@ public class Match {
         originalScales.clear();
         goals.clear();
         clearPlayers();
+        activeConfig = null;
     }
 
     public synchronized void removeBall() {

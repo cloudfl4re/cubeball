@@ -86,14 +86,22 @@ public class CubeBall extends JavaPlugin {
     private static volatile String bossBarBlueTeam = DEFAULT_BOSS_BAR_BLUE_TEAM;
     private static volatile String playerIdentityMode = "name";
     public static void generateBall(MatchData data, String id, Location location, Vector lastVelocity) {
+        generateBall(data.snapshot(), id, location, lastVelocity);
+    }
+
+    public static void generateBall(MatchData.Snapshot config, String id, Location location, Vector lastVelocity) {
         if (balls.get(id) != null) {
             throw new IllegalStateException("Same ID cannot be put on the same ball");
         }
         debug("generateBall id=" + id + " loc=" + formatLocation(location) + " lastVelocity=" + formatVector(lastVelocity));
-        spawnBall(data, id, location, lastVelocity, null);
+        spawnBall(config, id, location, lastVelocity, null);
     }
 
     public static Ball respawnBall(MatchData data, String id, Location location, Vector lastVelocity) {
+        return respawnBall(data.snapshot(), id, location, lastVelocity);
+    }
+
+    public static Ball respawnBall(MatchData.Snapshot config, String id, Location location, Vector lastVelocity) {
         Ball previous = balls.remove(id);
         debug("respawnBall id=" + id + " loc=" + formatLocation(location)
                 + " previous=" + describeBall(previous)
@@ -102,7 +110,7 @@ public class CubeBall extends JavaPlugin {
             previous.cancelPhysicsTask();
         }
 
-        Ball next = spawnBall(data, id, location, lastVelocity, null);
+        Ball next = spawnBall(config, id, location, lastVelocity, null);
 
         if (previous != null) {
             Entity previousCarrier = previous.getBall();
@@ -118,8 +126,8 @@ public class CubeBall extends JavaPlugin {
         return next;
     }
 
-    private static Ball spawnBall(MatchData data, String id, Location location, Vector lastVelocity, Display reusableDisplay) {
-        BallAppearance appearance = resolveAppearance(data);
+    private static Ball spawnBall(MatchData.Snapshot config, String id, Location location, Vector lastVelocity, Display reusableDisplay) {
+        BallAppearance appearance = resolveAppearance(config);
 
         BlockData blockData = appearance.getCarrierBlockData();
         debug("spawnBall id=" + id
@@ -204,8 +212,7 @@ public class CubeBall extends JavaPlugin {
      * 解析足球外观：ballCustomId 为空 → 原版 cubeBallBlock 的 BlockData，无显示实体；
      * 否则尝试 CE 解析，命中用 CE 结果，未命中/CE 未装回退原版并 warn 一次。
      */
-    private static BallAppearance resolveAppearance(MatchData data) {
-        MatchData.Snapshot snapshot = data.snapshot();
+    private static BallAppearance resolveAppearance(MatchData.Snapshot snapshot) {
         ItemStack customItem = snapshot.ballCustomItem();
         Material carrier = snapshot.cubeBallBlock();
         debug("resolveAppearance customId=" + snapshot.ballCustomId()
@@ -964,10 +971,10 @@ public class CubeBall extends JavaPlugin {
         if (match == null || player == null) return false;
         Location location = player.getLocation();
         if (match.getBlueTeam().contains(player)) {
-            return match.getData().isNearBlueTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
+            return match.getConfigSnapshot().isNearBlueTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
         }
         if (match.getRedTeam().contains(player)) {
-            return match.getData().isNearRedTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
+            return match.getConfigSnapshot().isNearRedTeamGoal(location, GOALKEEPER_GOAL_RADIUS);
         }
         return false;
     }

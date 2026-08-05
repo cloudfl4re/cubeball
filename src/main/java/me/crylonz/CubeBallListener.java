@@ -1,6 +1,7 @@
 package me.crylonz;
 
 import com.github.squi2rel.cb.GoalSelectionManager;
+import com.github.squi2rel.cb.MatchData;
 import com.github.squi2rel.cb.util.FoliaScheduler;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -51,6 +52,7 @@ public class CubeBallListener implements Listener {
 
         Match match = matches.get(ballId);
         if (match == null) return;
+        MatchData.Snapshot config = match.getConfigSnapshot();
 
         Ball ballData = balls.get(ballId);
         // 落地判断：CE 路径（carrierBlockData 非 null）用 BlockData 比较；
@@ -59,7 +61,7 @@ public class CubeBallListener implements Listener {
         if (carrier != null) {
             if (!e.getTo().equals(carrier)) return;
         } else {
-            Material block = match.getData().snapshot().cubeBallBlock();
+            Material block = config.cubeBallBlock();
             if (!e.getTo().equals(block)) return;
         }
         e.setCancelled(true);
@@ -75,7 +77,7 @@ public class CubeBallListener implements Listener {
             velocity = ballData.getBall().getVelocity();
             debug("landing id=" + ballId
                     + " to=" + e.getTo()
-                    + " carrier=" + (carrier == null ? "vanilla:" + match.getData().snapshot().cubeBallBlock() : carrier.getAsString())
+                    + " carrier=" + (carrier == null ? "vanilla:" + config.cubeBallBlock() : carrier.getAsString())
                     + " loc=" + e.getEntity().getLocation()
                     + " oldVelocity=" + velocity
                     + " valid=" + ballData.getBall().isValid()
@@ -86,7 +88,7 @@ public class CubeBallListener implements Listener {
 
             velocity.setY(min(maxZX, 0.5));
 
-            ballData = respawnBall(match.getData(), ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
+            ballData = respawnBall(config, ballId, e.getEntity().getLocation(), ballData.getLastVelocity());
             ballData.getBall().setVelocity(velocity);
         }
 
@@ -197,7 +199,7 @@ public class CubeBallListener implements Listener {
         }
         for (Match match : matches.values()) {
             if (match.canUseDash() && match.containsPlayer(event.getPlayer())) {
-                int cd = match.getData().snapshot().dashCooldown();
+                int cd = match.getConfigSnapshot().dashCooldown();
                 if (cd <= 0) break;
                 if (!cooldown.containsKey(event.getPlayer().getUniqueId())) {
                     cooldown.put(event.getPlayer().getUniqueId(), System.currentTimeMillis() + cd * 1000L);

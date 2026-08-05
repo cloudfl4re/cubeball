@@ -81,7 +81,7 @@ public final class ResidenceBossBar {
         double closestDistance = Double.MAX_VALUE;
         for (Match match : CubeBall.matches.values()) {
             if (!match.isInProgress()) continue;
-            Location ballSpawn = match.getData().snapshot().ballSpawn();
+            Location ballSpawn = match.getConfigSnapshot().ballSpawn();
             if (ballSpawn == null || ballSpawn.getWorld() != playerLocation.getWorld()) continue;
             double distance = playerLocation.distanceSquared(ballSpawn);
             if (distance < closestDistance) {

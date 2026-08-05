@@ -225,7 +225,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
                     return true;
                 }
                 boolean agree = value.equalsIgnoreCase("yes");
-                FoliaScheduler.runGlobal(() -> match.castPauseVote(player, agree));
+                FoliaScheduler.runEntity(player, () -> match.castPauseVote(player, agree));
                 return true;
             }
             Match match = findActivePlayerMatch(player);
@@ -238,7 +238,7 @@ public class CCBCommand implements CommandExecutor, TabCompleter {
                 sender.sendMessage(I18n.get("pause_vote_invalid_duration"));
                 return true;
             }
-            FoliaScheduler.runGlobal(() -> match.requestPauseVote(player, minutes));
+            FoliaScheduler.runEntity(player, () -> match.requestPauseVote(player, minutes));
             return true;
         }
         if (args.length > 0 && (args[0].equalsIgnoreCase("pause")
