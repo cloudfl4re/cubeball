@@ -4,14 +4,14 @@
 
 # CubeCubeBall
 
-**面向 Luminol、Folia 与 Paper 1.21.11 的多人方块足球系统**
+**面向 Luminol、Folia 与 Paper 26.2 的多人方块足球系统**
 
 多场地管理 · 队伍大厅 · 目标比分 · 技术暂停 · 背包保护 · CraftEngine 足球外观
 
-![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-1.1.1-2ea44f)
-![Minecraft](https://img.shields.io/badge/Minecraft-1.21.11-62b47a)
+![版本](https://img.shields.io/badge/%E7%89%88%E6%9C%AC-1.1.2-2ea44f)
+![Minecraft](https://img.shields.io/badge/Minecraft-26.2-62b47a)
 ![Folia](https://img.shields.io/badge/Folia-%E5%B7%B2%E6%94%AF%E6%8C%81-f5a623)
-![Java](https://img.shields.io/badge/Java-21-e76f00)
+![Java](https://img.shields.io/badge/Java-25-e76f00)
 ![许可证](https://img.shields.io/badge/%E8%AE%B8%E5%8F%AF%E8%AF%81-GPL--3.0-blue)
 
 </div>
@@ -56,17 +56,33 @@ CubeCubeBall 是一个在 Minecraft 内直接配置和运行的方块足球小�
 
 | 项目 | 目标版本 | 说明 |
 | --- | --- | --- |
-| 服务端 | Luminol/Folia/Paper `1.21.11` | 插件以 Paper API `1.21.11-R0.1-SNAPSHOT` 构建 |
-| Java | `21` | 运行和构建都需要 Java 21 |
-| 插件 API | Paper API | `plugin.yml` 已声明 `folia-supported: true` |
+| 服务端 | Luminol/Folia/Paper `26.2` | 实际运行验收使用 Luminol `26.2 build 726` |
+| Java | `25` | 运行和构建都需要 Java 25 |
+| 插件 API | Luminol API `26.2.build.726-stable` | `plugin.yml` 已声明 `folia-supported: true` |
 | 构建工具 | Maven 3.9+ | 使用 Maven Shade 生成最终 JAR |
 
-`folia-supported: true` 仅允许插件在 Folia 上加载。CubeCubeBall 还通过 `FoliaScheduler` 路由全局、区域、实体与异步任务；部署前仍应在目标 Luminol/Folia 服务端完成实际联机验证。
+`folia-supported: true` 仅允许插件在 Folia 上加载，并不能单独证明线程安全或功能完整。CubeCubeBall 通过 `FoliaScheduler` 路由全局、区域、实体与异步任务；本版本的运行验证基线是 `luminol-26.2-paperclip.jar` 对应的 Luminol build 726。Paper/Folia 兼容代码路径仍然保留，但部署到其他核心前仍需完成实际联机验证。
+
+Maven API 坐标与仓库：
+
+```xml
+<repository>
+    <id>bacteriawa</id>
+    <url>https://repo.bacteriawa.com/repository/maven-public/</url>
+</repository>
+
+<dependency>
+    <groupId>me.earthme.luminol</groupId>
+    <artifactId>luminol-api</artifactId>
+    <version>26.2.build.726-stable</version>
+    <scope>provided</scope>
+</dependency>
+```
 
 ## 安装与建场
 
-1. 使用 Java 21 启动 Luminol、Folia 或 Paper `1.21.11` 服务端。
-2. 将 `target/cubeball-1.1.1.jar` 放入服务器的 `plugins/` 目录。
+1. 使用 Java 25 启动 Luminol、Folia 或 Paper `26.2` 服务端。
+2. 将 `target/cubeball-1.1.2.jar` 放入服务器的 `plugins/` 目录。
 3. 启动服务器，确认生成插件数据目录和默认 `config.yml`。
 4. 管理员执行 `/ccb` 打开足球系统管理中心，创建一个场地。
 5. 在场地配置页依次设置：红队出生点、蓝队出生点、双方球门区域与足球出生点。
@@ -209,16 +225,16 @@ plugins/<CubeCubeBall 数据目录>/
 
 ## 构建
 
-项目使用 Maven 与 Java 21：
+项目使用 Maven 与 Java 25：
 
 ```text
-mvn package
+mvn -B clean package
 ```
 
 构建产物：
 
 ```text
-target/cubeball-1.1.1.jar
+target/cubeball-1.1.2.jar
 ```
 
 ## 开源许可
